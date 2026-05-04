@@ -1,4 +1,101 @@
-// TODO(phase-1): define audit_logs, proposed_actions, policies, approvals.
-// Keep this file as the single source of truth — drizzle.config.ts reads from here.
+import type { PolicyDecision, ProposedAction, Venue } from '@tc/types';
+import { relations } from 'drizzle-orm';
+import {
+  index,
+  integer,
+  jsonb,
+  numeric,
+  pgEnum,
+  pgTable,
+  text,
+  timestamp,
+  uuid,
+} from 'drizzle-orm/pg-core';
 
-export {};
+export const actionStatus = pgEnum('action_status', [
+  'pending',
+  'approved',
+  'denied',
+  'executed',
+  'failed',
+]);
+
+const VENUE_VALUES = ['kamino', 'drift', 'marginfi'] as const satisfies readonly Venue[];
+const DECISION_VALUES = ['approve', 'deny'] as const;
+
+export const proposedActions = pgTable(
+  'proposed_actions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    payload: jsonb('payload').$type<ProposedAction>().notNull(),
+    status: actionStatus('status').notNull().default('pending'),
+    amountUsdc: numeric('amount_usdc', { precision: 20, scale: 6 }).notNull(),
+    venue: text('venue', { enum: VENUE_VALUES }).notNull(),
+    proposedBy: text('proposed_by').notNull(),
+    policyDecision: jsonb('policy_decision').$type<PolicyDecision>(),
+    telegramMessageId: integer('telegram_message_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    executedAt: timestamp('executed_at', { withTimezone: true }),
+  },
+  (t) => [
+    index('proposed_actions_status_idx').on(t.status),
+    index('proposed_actions_created_at_idx').on(t.createdAt),
+    index('proposed_actions_status_created_at_idx').on(t.status, t.createdAt),
+  ],
+);
+
+export const approvals = pgTable(
+  'approvals',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    actionId: uuid('action_id')
+      .references(() => proposedActions.id, { onDelete: 'cascade' })
+      .notNull(),
+    approverTelegramId: text('approver_telegram_id').notNull(),
+    decision: text('decision', { enum: DECISION_VALUES }).notNull(),
+    decidedAt: timestamp('decided_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index('approvals_action_id_idx').on(t.actionId)],
+);
+
+export const auditLogs = pgTable(
+  'audit_logs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    kind: text('kind').notNull(),
+    actionId: uuid('action_id').references(() => proposedActions.id, { onDelete: 'set null' }),
+    actor: text('actor').notNull(),
+    payload: jsonb('payload'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    index('audit_logs_action_id_idx').on(t.actionId),
+    index('audit_logs_created_at_idx').on(t.createdAt),
+  ],
+);
+
+export const proposedActionsRelations = relations(proposedActions, ({ many }) => ({
+  approvals: many(approvals),
+  auditLogs: many(auditLogs),
+}));
+
+export const approvalsRelations = relations(approvals, ({ one }) => ({
+  action: one(proposedActions, {
+    fields: [approvals.actionId],
+    references: [proposedActions.id],
+  }),
+}));
+
+export const auditLogsRelations = relations(auditLogs, ({ one }) => ({
+  action: one(proposedActions, {
+    fields: [auditLogs.actionId],
+    references: [proposedActions.id],
+  }),
+}));
+
+export type ProposedActionRow = typeof proposedActions.$inferSelect;
+export type NewProposedActionRow = typeof proposedActions.$inferInsert;
+export type ApprovalRow = typeof approvals.$inferSelect;
+export type NewApprovalRow = typeof approvals.$inferInsert;
+export type AuditLogRow = typeof auditLogs.$inferSelect;
+export type NewAuditLogRow = typeof auditLogs.$inferInsert;
