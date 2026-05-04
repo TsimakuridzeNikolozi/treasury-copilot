@@ -1,0 +1,12 @@
+{
+  "$schema": "https://docs.qvac.tether.io/qvac.config.schema.json",
+  "serve": {
+    "models": {
+      "QWEN3_600M_INST_Q4": {
+        "model": "QWEN3_600M_INST_Q4",
+        "default": true,
+        "preload": true
+      }
+    }
+  }
+}

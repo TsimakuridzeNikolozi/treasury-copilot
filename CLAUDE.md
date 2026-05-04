@@ -57,12 +57,18 @@ agent-tools  →  policy  →  signer
 
 When adding a new tool or signer method, **never bypass this chain**. Don't add an export from `@tc/agent-tools` to `@tc/signer` directly — it would defeat the boundary.
 
+### AI provider abstraction
+
+Three pluggable backends — Anthropic Claude, OpenAI, and QVAC (local-first via Tether). Picked at runtime via `MODEL_PROVIDER`. All three plug in through a single switch in `apps/web/src/lib/ai/model.ts`; QVAC reuses the OpenAI provider with a custom `baseURL` since `qvac serve openai` is OpenAI-API-compatible. **Don't import `@ai-sdk/anthropic` or `@ai-sdk/openai` from anywhere else** — that breaks the swap. The trust boundary is unchanged: whichever model proposes, `policy.evaluate()` decides.
+
+The orchestration helper `proposeAction(db, action, ctx)` lives in `@tc/agent-tools/src/propose.ts` and wires `sumAutoApprovedSince → evaluate → insertProposedAction` in one call. Vercel AI SDK tool definitions in the same package wrap it. The chat route (`apps/web/src/app/api/chat/route.ts`) is a thin shim around `streamText({ tools, messages })`.
+
 ### Workspace dependency direction (no cycles by construction)
 
 ```
 apps/web      → env, types, db, policy, agent-tools, protocols
 apps/worker   → env, types, db, policy, signer
-agent-tools   → types, policy, signer, protocols
+agent-tools   → types, policy, signer, protocols, db
 signer        → types, policy
 policy        → types
 protocols     → types
@@ -114,11 +120,10 @@ Biome only. **Do not add ESLint or Prettier.** Run `pnpm exec biome check --writ
 These are first-feature work, not setup. When asked to "add X", check this list — if it's here, the answer is "yes, that's phase-1 work, not a config tweak":
 
 - Auth (Privy / Turnkey)
-- Real Drizzle schema (audit logs, proposed actions, policies, approvals)
-- Vercel AI SDK wiring + chat route handler in `apps/web/src/app/api/chat/route.ts`
 - Solana RPC client and protocol SDKs (Kamino, Drift, Marginfi) — `packages/protocols` is stubs only
 - Telegram bot client (grammy) in `apps/worker/src/bot.ts`
-- Policy rules and signer implementation
+- Signer implementation (the `@tc/signer.executeApproved` interface exists; no provider yet)
+- A `policies` table — phase-1 rules live in `packages/policy/src/index.ts` (`DEFAULT_POLICY`)
 - CI workflows (`.github/workflows/`)
 - Vercel project and Railway service configuration
 

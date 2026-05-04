@@ -16,10 +16,12 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
+    "@tc/db": "workspace:^",
     "@tc/policy": "workspace:*",
     "@tc/protocols": "workspace:*",
     "@tc/signer": "workspace:*",
     "@tc/types": "workspace:*",
+    "ai": "^6.0.175",
     "zod": "^3.23.8"
   },
   "devDependencies": {

@@ -54,6 +54,9 @@ export interface InsertProposedActionInput {
   action: ProposedAction;
   decision: PolicyDecision;
   proposedBy: string;
+  // Free-form context merged into the audit log payload (e.g., model provider,
+  // chat session id). Not stored on the action row itself.
+  meta?: Record<string, unknown>;
 }
 
 // Note: for `allow` decisions the action is stored twice (in `payload` and
@@ -83,7 +86,11 @@ export async function insertProposedAction(
       kind: 'action_proposed',
       actionId: row.id,
       actor: 'agent',
-      payload: { action: input.action, decision: input.decision },
+      payload: {
+        action: input.action,
+        decision: input.decision,
+        ...(input.meta ?? {}),
+      },
     };
     await tx.insert(auditLogs).values(audit);
 

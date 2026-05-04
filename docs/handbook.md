@@ -8,14 +8,15 @@ End-to-end guide for working in this repo: setup, day-to-day development, deploy
 - [4. Working in the monorepo](#4-working-in-the-monorepo)
 - [5. Database workflow](#5-database-workflow)
 - [6. Environment variables](#6-environment-variables)
-- [7. Testing](#7-testing)
-- [8. Linting and formatting](#8-linting-and-formatting)
-- [9. Adding features safely (the trust boundary)](#9-adding-features-safely-the-trust-boundary)
-- [10. Deploying the web app to Vercel](#10-deploying-the-web-app-to-vercel)
-- [11. Deploying the worker to Railway](#11-deploying-the-worker-to-railway)
-- [12. Database in production (Neon)](#12-database-in-production-neon)
-- [13. Troubleshooting](#13-troubleshooting)
-- [14. Phase-1 roadmap](#14-phase-1-roadmap)
+- [7. AI provider setup](#7-ai-provider-setup)
+- [8. Testing](#8-testing)
+- [9. Linting and formatting](#9-linting-and-formatting)
+- [10. Adding features safely (the trust boundary)](#10-adding-features-safely-the-trust-boundary)
+- [11. Deploying the web app to Vercel](#11-deploying-the-web-app-to-vercel)
+- [12. Deploying the worker to Railway](#12-deploying-the-worker-to-railway)
+- [13. Database in production (Neon)](#13-database-in-production-neon)
+- [14. Troubleshooting](#14-troubleshooting)
+- [15. Phase-1 roadmap](#15-phase-1-roadmap)
 
 ---
 
@@ -271,7 +272,7 @@ There's intentionally no root `.env`. Each app owns its own.
 - **Web**: `apps/web/src/env.ts` uses `@t3-oss/env-nextjs` with Zod. Validation runs at module load; an invalid env aborts the build *and* dev server. The schema imports reusable fragments from `@tc/env`.
 - **Worker**: `apps/worker/src/env.ts` does a direct `schema.safeParse(process.env)` and `process.exit(1)` on failure.
 
-This is why builds fail with "Invalid environment variables" if `.env.local` is missing — see [§13](#13-troubleshooting).
+This is why builds fail with "Invalid environment variables" if `.env.local` is missing — see [§14](#14-troubleshooting).
 
 ### Adding a new variable (the three places)
 
@@ -298,7 +299,84 @@ For a client-public var (`NEXT_PUBLIC_*`), add it to `packages/env/src/client.ts
 
 ---
 
-## 7. Testing
+## 7. AI provider setup
+
+The chat surface routes through one of three providers, picked at runtime via `MODEL_PROVIDER` in `apps/web/.env.local`. The single switch lives in `apps/web/src/lib/ai/model.ts`. Tools and route handlers don't import provider SDKs directly — that keeps swap a one-line change.
+
+### Using Anthropic (default)
+
+```bash
+# apps/web/.env.local
+MODEL_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_MODEL=claude-sonnet-4-6
+```
+
+Get a key from https://console.anthropic.com. The default model is `claude-sonnet-4-6`; override if you want a smaller/faster model for dev.
+
+### Using OpenAI
+
+```bash
+MODEL_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-5.4-mini
+```
+
+### Using QVAC (local-first, by Tether)
+
+QVAC runs models on-device — useful for privacy-sensitive operators. Its HTTP server is OpenAI-API-compatible, so the OpenAI provider plugs in unchanged with a custom `baseURL`.
+
+One-time install:
+
+```bash
+pnpm add -g @qvac/cli
+```
+
+QVAC needs a model alias declared in `qvac.config.json` at the repo root before the server exposes `/v1/chat/completions`. The repo already includes one (`QWEN3_600M_INST_Q4` aliased to itself, set as the default and preloaded) — extend it if you want a different model.
+
+In one terminal, start the server from the repo root (binds 127.0.0.1:11434):
+
+```bash
+qvac serve openai
+```
+
+First boot downloads the model (~2 GB for the 3B); subsequent boots are warm. If you skipped the config, you'll see "No models configured for preload" and the chat-completions endpoint will be missing — start it from the repo root so it picks up `qvac.config.json`.
+
+In `apps/web/.env.local`:
+
+```bash
+MODEL_PROVIDER=qvac
+QVAC_BASE_URL=http://localhost:11434/v1
+QVAC_MODEL=QWEN3_600M_INST_Q4
+```
+
+> **Port collision with Ollama:** Ollama also defaults to 11434. Run QVAC on a different port: `qvac serve openai -p 11435`, and update `QVAC_BASE_URL` to match.
+
+> **Model size vs tool-calling fidelity:** smaller models (1B) often hallucinate tool arguments. The trust boundary catches these (`policy.evaluate` rejects malformed amounts/addresses) — funds are safe, but UX suffers. Pick the largest model your hardware sustains.
+
+### Smoke-testing the chat
+
+```bash
+pnpm dev                                # web on :3000
+# open http://localhost:3000/chat
+# type: "deposit 500 USDC into Kamino from So11111111111111111111111111111111111111112"
+# expect: streamed response describing the policy decision
+# verify in db:
+docker exec -it treasury-copilot-postgres psql -U copilot -d treasury \
+  -c "SELECT id, status, amount_usdc, venue FROM proposed_actions ORDER BY created_at DESC LIMIT 3;"
+```
+
+Audit the model that proposed each action:
+
+```bash
+docker exec -it treasury-copilot-postgres psql -U copilot -d treasury \
+  -c "SELECT kind, payload->>'modelProvider' AS provider, created_at
+      FROM audit_logs ORDER BY created_at DESC LIMIT 10;"
+```
+
+---
+
+## 8. Testing
 
 Vitest in every package. No `vitest.config.ts` files — defaults are fine. Tests live next to source as `*.test.ts` / `*.test.tsx`.
 
@@ -321,7 +399,7 @@ End-to-end tests (Playwright, etc.) are **not** set up. Add when there's enough 
 
 ---
 
-## 8. Linting and formatting
+## 9. Linting and formatting
 
 Biome only — no ESLint, no Prettier. The shared config lives at `packages/biome-config/biome.json` and the root `biome.json` extends it.
 
@@ -349,7 +427,7 @@ Husky is also fine; we picked Biome partly to avoid the ESLint+Prettier+lint-sta
 
 ---
 
-## 9. Adding features safely (the trust boundary)
+## 10. Adding features safely (the trust boundary)
 
 The single most important architectural rule. **Do not bypass `@tc/policy`.**
 
@@ -382,7 +460,7 @@ Add to the `Signer` interface in `packages/signer/src/index.ts`. Every method mu
 
 ---
 
-## 10. Deploying the web app to Vercel
+## 11. Deploying the web app to Vercel
 
 ### One-time setup
 
@@ -434,7 +512,7 @@ The web app validates env at build time via t3-env. **All required vars must be 
 
 ---
 
-## 11. Deploying the worker to Railway
+## 12. Deploying the worker to Railway
 
 The `railway` skill is installed; lean on it for anything not covered here.
 
@@ -480,7 +558,7 @@ The worker is currently a no-op idle loop with a `SIGTERM`/`SIGINT` handler. Whe
 
 ---
 
-## 12. Database in production (Neon)
+## 13. Database in production (Neon)
 
 ### One-time setup
 
@@ -506,7 +584,7 @@ Neon has point-in-time restore on paid plans. For free tier, set up a nightly `p
 
 ---
 
-## 13. Troubleshooting
+## 14. Troubleshooting
 
 ### `Invalid environment variables` at build or dev
 
@@ -560,7 +638,7 @@ You already have a Postgres running locally (Homebrew, another project's Docker)
 
 ---
 
-## 14. Phase-1 roadmap
+## 15. Phase-1 roadmap
 
 Suggested build order. Each item has a recommended skill to invoke when you start it.
 

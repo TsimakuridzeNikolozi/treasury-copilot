@@ -51,7 +51,7 @@ packages/
 ```
 apps/web      → env, types, db, policy, agent-tools, protocols
 apps/worker   → env, types, db, policy, signer
-agent-tools   → types, policy, signer, protocols
+agent-tools   → types, policy, signer, protocols, db
 signer        → types, policy
 policy        → types
 protocols     → types

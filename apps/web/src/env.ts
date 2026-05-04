@@ -1,11 +1,31 @@
 import { createEnv } from '@t3-oss/env-nextjs';
-import { databaseUrlSchema, logLevelSchema, publicAppUrlSchema, solanaRpcUrlSchema } from '@tc/env';
+import {
+  anthropicApiKeySchema,
+  anthropicModelSchema,
+  databaseUrlSchema,
+  logLevelSchema,
+  modelProviderSchema,
+  openaiApiKeySchema,
+  openaiModelSchema,
+  publicAppUrlSchema,
+  qvacBaseUrlSchema,
+  qvacModelSchema,
+  solanaRpcUrlSchema,
+} from '@tc/env';
 
 export const env = createEnv({
   server: {
     DATABASE_URL: databaseUrlSchema,
     SOLANA_RPC_URL: solanaRpcUrlSchema,
     LOG_LEVEL: logLevelSchema,
+
+    MODEL_PROVIDER: modelProviderSchema,
+    ANTHROPIC_API_KEY: anthropicApiKeySchema,
+    ANTHROPIC_MODEL: anthropicModelSchema,
+    OPENAI_API_KEY: openaiApiKeySchema,
+    OPENAI_MODEL: openaiModelSchema,
+    QVAC_BASE_URL: qvacBaseUrlSchema,
+    QVAC_MODEL: qvacModelSchema,
   },
   client: {
     NEXT_PUBLIC_APP_URL: publicAppUrlSchema,

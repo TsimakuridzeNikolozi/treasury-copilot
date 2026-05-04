@@ -15,7 +15,7 @@
     "format": "biome format --write .",
     "format:check": "biome format .",
     "typecheck": "turbo run typecheck",
-    "test": "turbo run test",
+    "test": "turbo run test --concurrency=1",
     "clean": "turbo run clean && rm -rf node_modules .turbo",
     "db:generate": "pnpm --filter @tc/db generate",
     "db:migrate": "pnpm --filter @tc/db migrate",

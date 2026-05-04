@@ -4,7 +4,13 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"]
-    }
+    },
+    // shadcn / ai-elements components ship without satisfying
+    // exactOptionalPropertyTypes (e.g. Radix's `checked: CheckedState | undefined`
+    // vs the prop typed without `| undefined`). We keep the strict variant on in
+    // packages we own (where it catches real bugs) and relax it here so we can
+    // consume third-party UI primitives unchanged.
+    "exactOptionalPropertyTypes": false
   },
   "include": ["next-env.d.ts", "src/**/*.ts", "src/**/*.tsx", ".next/types/**/*.ts"],
   "exclude": ["node_modules", ".next", "dist"]
