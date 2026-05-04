@@ -14,7 +14,7 @@
   "scripts": {
     "lint": "biome check src",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },

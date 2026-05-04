@@ -16,7 +16,8 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
-    "@tc/types": "workspace:*"
+    "@tc/types": "workspace:*",
+    "decimal.js": "^10.6.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
