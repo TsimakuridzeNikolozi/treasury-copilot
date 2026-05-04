@@ -1,0 +1,13 @@
+**/node_modules
+**/dist
+**/.next
+**/.turbo
+**/coverage
+**/*.tsbuildinfo
+.git
+.github
+.vscode
+**/.env
+**/.env.local
+**/.env.*.local
+README.md
