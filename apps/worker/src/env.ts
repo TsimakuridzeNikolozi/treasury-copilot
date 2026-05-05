@@ -21,6 +21,13 @@ const schema = z.object({
   APPROVER_TELEGRAM_IDS: approverIdsSchema,
 
   ACTION_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
+  EXECUTOR_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(3000),
+
+  // Stub-signer-only knob: how often the random failure path fires. Tests
+  // pin this to 0 for deterministic success-path runs; demos leave the
+  // default to exercise the failure UI organically. Goes away when a real
+  // signer replaces the stub.
+  STUB_SIGNER_FAILURE_RATE: z.coerce.number().min(0).max(1).default(0.1),
 });
 
 const parsed = schema.safeParse(process.env);

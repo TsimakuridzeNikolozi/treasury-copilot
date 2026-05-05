@@ -1,4 +1,10 @@
-import { type ProposedActionRow, TransitionConflictError, recordApproval } from '@tc/db';
+import {
+  type ApprovalAttribution,
+  type ProposedActionRow,
+  TransitionConflictError,
+  recordApproval,
+} from '@tc/db';
+import type { ExecuteResult } from '@tc/types';
 import { Bot, InlineKeyboard } from 'grammy';
 import { db } from './db';
 import { env } from './env';
@@ -127,7 +133,29 @@ function formatResolved(
   return [summaryLine(row.payload), `<code>${row.id}</code>`, '', `${verb} by ${who}`].join('\n');
 }
 
-// --- public API used by the poller ---
+function formatAttribution(attribution: ApprovalAttribution | null): string {
+  if (!attribution) return 'unknown approver';
+  return attribution.username
+    ? `@${escapeHtml(attribution.username)}`
+    : `id ${escapeHtml(attribution.approverTelegramId)}`;
+}
+
+function formatExecuted(
+  row: ProposedActionRow,
+  result: ExecuteResult,
+  attribution: ApprovalAttribution | null,
+): string {
+  const lines = [summaryLine(row.payload), `<code>${row.id}</code>`, ''];
+  lines.push(`✅ <b>Approved</b> by ${formatAttribution(attribution)}`);
+  if (result.kind === 'success') {
+    lines.push(`⛓️ <b>Executed</b> <code>${escapeHtml(result.txSignature)}</code>`);
+  } else {
+    lines.push(`❌ <b>Failed</b>: <i>${escapeHtml(result.error)}</i>`);
+  }
+  return lines.join('\n');
+}
+
+// --- public API used by the poller and the executor ---
 
 export async function postApprovalCard(row: ProposedActionRow): Promise<number> {
   const keyboard = new InlineKeyboard()
@@ -139,4 +167,25 @@ export async function postApprovalCard(row: ProposedActionRow): Promise<number> 
     reply_markup: keyboard,
   });
   return msg.message_id;
+}
+
+export async function editApprovalCardWithExecution(
+  row: ProposedActionRow,
+  result: ExecuteResult,
+  attribution: ApprovalAttribution | null,
+): Promise<void> {
+  if (!row.telegramMessageId) {
+    // Anything in `approved` was approved via the Telegram callback, which
+    // means the poller had already stamped a message id. Hitting this branch
+    // means a real bug (manual DB edit, or a non-Telegram approval path
+    // nobody told bot.ts about). Surface it instead of silently skipping.
+    console.warn(`[bot] action ${row.id} reached executor with no telegramMessageId`);
+    return;
+  }
+  await bot.api.editMessageText(
+    APPROVAL_CHAT_ID,
+    row.telegramMessageId,
+    formatExecuted(row, result, attribution),
+    { parse_mode: 'HTML' },
+  );
 }

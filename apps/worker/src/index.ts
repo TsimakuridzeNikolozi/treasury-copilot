@@ -1,10 +1,12 @@
 import { bot } from './bot';
 import { env } from './env';
+import { startExecutor } from './executor';
 import { startActionPoller } from './poller';
 
 console.log(`[worker] booting in ${env.NODE_ENV} mode`);
 
 const stopPoller = startActionPoller();
+const stopExecutor = startExecutor();
 
 let isShuttingDown = false;
 const shutdown = async (signal: string) => {
@@ -13,6 +15,7 @@ const shutdown = async (signal: string) => {
   console.log(`[worker] received ${signal}, shutting down`);
   try {
     stopPoller();
+    stopExecutor();
     await bot.stop();
   } catch (err) {
     console.error('[worker] shutdown error', err);

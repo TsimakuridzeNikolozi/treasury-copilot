@@ -50,6 +50,16 @@ export const PolicyDecisionSchema = z.discriminatedUnion('kind', [
 ]);
 export type PolicyDecision = z.infer<typeof PolicyDecisionSchema>;
 
+// Outcome of `Signer.executeApproved`. The audit log payload for the
+// `approved → executed` / `approved → failed` transition stores the success's
+// txSignature or the failure's error string, keeping execution metadata in the
+// unstructured audit table until a real signer pins down the column shape.
+export const ExecuteResultSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('success'), txSignature: z.string() }),
+  z.object({ kind: z.literal('failure'), error: z.string() }),
+]);
+export type ExecuteResult = z.infer<typeof ExecuteResultSchema>;
+
 export interface ToolCall {
   name: string;
   input: unknown;
