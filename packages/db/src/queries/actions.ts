@@ -227,15 +227,22 @@ export async function findPendingForTelegram(db: Db, limit = 25): Promise<Propos
     .limit(limit);
 }
 
+// Compare-and-set: only stamps telegramMessageId when it's still NULL, so a
+// concurrent poster (or a retry after a successful post) can't overwrite an
+// already-recorded message id. Returns true if this call won the race.
 export async function setTelegramMessageId(
   db: Db,
   actionId: string,
   telegramMessageId: number,
-): Promise<void> {
-  await db
+): Promise<boolean> {
+  const updated = await db
     .update(proposedActions)
     .set({ telegramMessageId })
-    .where(eq(proposedActions.id, actionId));
+    .where(
+      and(eq(proposedActions.id, actionId), isNull(proposedActions.telegramMessageId)),
+    )
+    .returning({ id: proposedActions.id });
+  return updated.length > 0;
 }
 
 export interface RecordApprovalInput {

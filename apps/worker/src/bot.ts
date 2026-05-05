@@ -27,6 +27,10 @@ bot.use(async (ctx, next) => {
       await ctx.answerCallbackQuery({ text: 'Not authorized', show_alert: true });
       return;
     }
+    if (String(ctx.chat?.id) !== APPROVAL_CHAT_ID) {
+      await ctx.answerCallbackQuery({ text: 'Not authorized', show_alert: true });
+      return;
+    }
   }
   if (ctx.message && String(ctx.chat?.id) !== APPROVAL_CHAT_ID) {
     return;
@@ -57,7 +61,7 @@ bot.callbackQuery(/^(approve|deny):(.+)$/, async (ctx) => {
       ...(ctx.from?.username ? { meta: { username: ctx.from.username } } : {}),
     });
 
-    await ctx.editMessageText(formatResolved(action, decision, ctx.from?.username), {
+    await ctx.editMessageText(formatResolved(action, decision, ctx.from?.username, approverId), {
       parse_mode: 'HTML',
     });
   } catch (err) {
@@ -92,11 +96,11 @@ function escapeHtml(s: string): string {
 function summaryLine(action: ProposedActionRow['payload']): string {
   switch (action.kind) {
     case 'deposit':
-      return `<b>Deposit</b> ${action.amountUsdc} USDC → ${action.venue}`;
+      return `<b>Deposit</b> ${action.amountUsdc} USDC → ${escapeHtml(action.venue)}`;
     case 'withdraw':
-      return `<b>Withdraw</b> ${action.amountUsdc} USDC ← ${action.venue}`;
+      return `<b>Withdraw</b> ${action.amountUsdc} USDC ← ${escapeHtml(action.venue)}`;
     case 'rebalance':
-      return `<b>Rebalance</b> ${action.amountUsdc} USDC: ${action.fromVenue} → ${action.toVenue}`;
+      return `<b>Rebalance</b> ${action.amountUsdc} USDC: ${escapeHtml(action.fromVenue)} → ${escapeHtml(action.toVenue)}`;
   }
 }
 
@@ -116,9 +120,10 @@ function formatResolved(
   row: ProposedActionRow,
   decision: 'approve' | 'deny',
   username: string | undefined,
+  approverId: number,
 ): string {
   const verb = decision === 'approve' ? '✅ <b>Approved</b>' : '❌ <b>Denied</b>';
-  const who = username ? `@${escapeHtml(username)}` : `id ${row.id}`;
+  const who = username ? `@${escapeHtml(username)}` : `id ${approverId}`;
   return [summaryLine(row.payload), `<code>${row.id}</code>`, '', `${verb} by ${who}`].join('\n');
 }
 

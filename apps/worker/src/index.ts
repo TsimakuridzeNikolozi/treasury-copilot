@@ -6,11 +6,18 @@ console.log(`[worker] booting in ${env.NODE_ENV} mode`);
 
 const stopPoller = startActionPoller();
 
+let isShuttingDown = false;
 const shutdown = async (signal: string) => {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
   console.log(`[worker] received ${signal}, shutting down`);
-  stopPoller();
-  await bot.stop();
-  process.exit(0);
+  try {
+    stopPoller();
+    await bot.stop();
+  } catch (err) {
+    console.error('[worker] shutdown error', err);
+  }
+  process.exitCode = 0;
 };
 
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
