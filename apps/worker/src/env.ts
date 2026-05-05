@@ -23,7 +23,7 @@ const schema = z.object({
   ACTION_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
   EXECUTOR_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(3000),
 
-  // Stub-signer-only knob: how often the random failure path fires. Tests
+  // TODO(phase-1): Stub-signer-only knob: how often the random failure path fires. Tests
   // pin this to 0 for deterministic success-path runs; demos leave the
   // default to exercise the failure UI organically. Goes away when a real
   // signer replaces the stub.

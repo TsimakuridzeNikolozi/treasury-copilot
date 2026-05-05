@@ -20,13 +20,16 @@ function actorString(actor: AuditActor): string {
   return typeof actor === 'string' ? actor : `tg:${actor.telegramId}`;
 }
 
-// Only `approved` actions are eligible for execution, so `failed` is reachable
-// only from `approved` (signer hit an error). `pending → failed` is intentionally
-// illegal: a still-pending action means no human (or policy) authorised it, so
-// "failed execution" cannot have happened.
+// `approved → executing` is the executor's atomic claim: only one replica can
+// flip an approved row into `executing`, which prevents two workers from both
+// running the signer for the same action. Terminal results (`executed`,
+// `failed`) are reachable only from `executing`. `pending → failed` is
+// intentionally illegal: a still-pending action means no human (or policy)
+// authorised it, so "failed execution" cannot have happened.
 const LEGAL_TRANSITIONS: Record<ActionStatus, readonly ActionStatus[]> = {
   pending: ['approved', 'denied'],
-  approved: ['executed', 'failed'],
+  approved: ['executing'],
+  executing: ['executed', 'failed'],
   denied: [],
   executed: [],
   failed: [],
@@ -210,7 +213,7 @@ export async function sumAutoApprovedSince(db: Db, since: Date): Promise<string>
     .from(proposedActions)
     .where(
       and(
-        inArray(proposedActions.status, ['approved', 'executed']),
+        inArray(proposedActions.status, ['approved', 'executing', 'executed']),
         sql`${proposedActions.policyDecision} ->> 'kind' = 'allow'`,
         gte(proposedActions.createdAt, since),
       ),

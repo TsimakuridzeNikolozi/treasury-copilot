@@ -11,9 +11,9 @@ export interface Signer {
 
 // --- stub implementation ---
 //
-// Until a real signing backend is wired up, this stub closes the state
-// machine: `approved` actions resolve to `executed` or `failed` so the audit
-// trail, Telegram card update, and executor process can be exercised
+// TODO(phase-1): Until a real signing backend is wired up, this stub closes
+// the state machine: `approved` actions resolve to `executed` or `failed` so
+// the audit trail, Telegram card update, and executor process can be exercised
 // end-to-end. Step 2 of the roadmap replaces this file's body with real
 // transaction construction (Kamino first); the interface and the trust
 // boundary do not change.

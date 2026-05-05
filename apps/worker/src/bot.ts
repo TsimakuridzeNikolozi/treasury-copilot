@@ -175,11 +175,13 @@ export async function editApprovalCardWithExecution(
   attribution: ApprovalAttribution | null,
 ): Promise<void> {
   if (!row.telegramMessageId) {
-    // Anything in `approved` was approved via the Telegram callback, which
-    // means the poller had already stamped a message id. Hitting this branch
-    // means a real bug (manual DB edit, or a non-Telegram approval path
-    // nobody told bot.ts about). Surface it instead of silently skipping.
-    console.warn(`[bot] action ${row.id} reached executor with no telegramMessageId`);
+    // Auto-approved rows (policy `allow`) never get a Telegram card — they go
+    // straight from insert to status=approved. Skip silently. A missing id on
+    // a `requires_approval` row is a real bug (manual DB edit, or a Telegram
+    // approval path nobody told bot.ts about), so still surface that case.
+    if (row.policyDecision?.kind !== 'allow') {
+      console.warn(`[bot] action ${row.id} reached executor with no telegramMessageId`);
+    }
     return;
   }
   await bot.api.editMessageText(
