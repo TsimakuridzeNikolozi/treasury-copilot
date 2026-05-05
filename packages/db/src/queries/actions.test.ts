@@ -125,9 +125,15 @@ describe.skipIf(SKIP)('queries/actions', () => {
     it('sets executedAt when transitioning to executed', async () => {
       const row = await pendingRow();
       await transitionAction(db, { id: row.id, from: 'pending', to: 'approved', actor: 'system' });
-      const executed = await transitionAction(db, {
+      await transitionAction(db, {
         id: row.id,
         from: 'approved',
+        to: 'executing',
+        actor: 'signer',
+      });
+      const executed = await transitionAction(db, {
+        id: row.id,
+        from: 'executing',
         to: 'executed',
         actor: 'signer',
       });

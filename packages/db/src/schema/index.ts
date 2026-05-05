@@ -15,6 +15,7 @@ import {
 export const actionStatus = pgEnum('action_status', [
   'pending',
   'approved',
+  'executing',
   'denied',
   'executed',
   'failed',

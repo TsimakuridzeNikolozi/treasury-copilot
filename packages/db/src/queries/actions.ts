@@ -1,5 +1,5 @@
 import type { PolicyDecision, ProposedAction } from '@tc/types';
-import { and, asc, eq, gte, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, like, sql } from 'drizzle-orm';
 import type { Db } from '../client';
 import {
   type ApprovalRow,
@@ -20,13 +20,16 @@ function actorString(actor: AuditActor): string {
   return typeof actor === 'string' ? actor : `tg:${actor.telegramId}`;
 }
 
-// Only `approved` actions are eligible for execution, so `failed` is reachable
-// only from `approved` (signer hit an error). `pending → failed` is intentionally
-// illegal: a still-pending action means no human (or policy) authorised it, so
-// "failed execution" cannot have happened.
+// `approved → executing` is the executor's atomic claim: only one replica can
+// flip an approved row into `executing`, which prevents two workers from both
+// running the signer for the same action. Terminal results (`executed`,
+// `failed`) are reachable only from `executing`. `pending → failed` is
+// intentionally illegal: a still-pending action means no human (or policy)
+// authorised it, so "failed execution" cannot have happened.
 const LEGAL_TRANSITIONS: Record<ActionStatus, readonly ActionStatus[]> = {
   pending: ['approved', 'denied'],
-  approved: ['executed', 'failed'],
+  approved: ['executing'],
+  executing: ['executed', 'failed'],
   denied: [],
   executed: [],
   failed: [],
@@ -192,8 +195,11 @@ export async function transitionAction(
 //   separate from human-approved spend (a human's $50k action shouldn't poison
 //   the next 24h of auto-approvals).
 // - `failed` is excluded on the assumption that a failed execution moved no
-//   funds. If partial execution ever becomes possible, this exclusion needs
-//   revisiting — a half-executed action would silently free its slot in the cap.
+//   funds. Now that execution can fail (executor + signer landed), this
+//   exclusion is load-bearing rather than dormant: an auto-approved deposit
+//   whose stub fails frees its slot in the 24h cap, which is the desired
+//   semantic. Partial execution would still silently free a slot — revisit
+//   when a real signer can land a half-broadcast tx.
 //
 // Caller is responsible for handling the read-then-write race: two parallel
 // proposals can both observe the same total and both pass the cap. Tolerated
@@ -207,12 +213,68 @@ export async function sumAutoApprovedSince(db: Db, since: Date): Promise<string>
     .from(proposedActions)
     .where(
       and(
-        inArray(proposedActions.status, ['approved', 'executed']),
+        inArray(proposedActions.status, ['approved', 'executing', 'executed']),
         sql`${proposedActions.policyDecision} ->> 'kind' = 'allow'`,
         gte(proposedActions.createdAt, since),
       ),
     );
   return row?.total ?? '0';
+}
+
+// Find approved actions ready for the executor to pick up. FIFO ordering so
+// older actions don't get starved; `limit` bounds each tick.
+export async function findApprovedForExecution(db: Db, limit = 10): Promise<ProposedActionRow[]> {
+  return db
+    .select()
+    .from(proposedActions)
+    .where(eq(proposedActions.status, 'approved'))
+    .orderBy(asc(proposedActions.createdAt))
+    .limit(limit);
+}
+
+// Look up the human that approved an action so the executor can attribute the
+// click in the resolved Telegram card.
+//
+// `recordApproval` writes the username to the audit log payload (via
+// transitionActionInTx → payload.extra.username), NOT to the approvals row.
+// That's a deliberate split: approvals carries the strict (telegramId,
+// decision) tuple, while audit_logs carries the loose context. So the lookup
+// reads the latest status_transition audit row for this action.
+export interface ApprovalAttribution {
+  approverTelegramId: string;
+  username?: string;
+}
+
+export async function getApprovalAttribution(
+  db: Db,
+  actionId: string,
+): Promise<ApprovalAttribution | null> {
+  // Filter on actor `tg:%` so we skip the executor's own `approved → executed`
+  // transition (actor 'signer'), which would otherwise be the latest
+  // status_transition row by createdAt and shadow the human approval.
+  const [row] = await db
+    .select({ actor: auditLogs.actor, payload: auditLogs.payload })
+    .from(auditLogs)
+    .where(
+      and(
+        eq(auditLogs.actionId, actionId),
+        eq(auditLogs.kind, 'status_transition'),
+        like(auditLogs.actor, 'tg:%'),
+      ),
+    )
+    .orderBy(desc(auditLogs.createdAt))
+    .limit(1);
+  if (!row) return null;
+  const approverTelegramId = row.actor.slice('tg:'.length);
+  const extra =
+    row.payload && typeof row.payload === 'object' && 'extra' in row.payload
+      ? (row.payload as { extra?: { username?: unknown } }).extra
+      : undefined;
+  const username =
+    extra && typeof extra === 'object' && typeof extra.username === 'string'
+      ? extra.username
+      : undefined;
+  return username ? { approverTelegramId, username } : { approverTelegramId };
 }
 
 // Find pending actions that haven't been posted to Telegram yet. The worker's
@@ -238,9 +300,7 @@ export async function setTelegramMessageId(
   const updated = await db
     .update(proposedActions)
     .set({ telegramMessageId })
-    .where(
-      and(eq(proposedActions.id, actionId), isNull(proposedActions.telegramMessageId)),
-    )
+    .where(and(eq(proposedActions.id, actionId), isNull(proposedActions.telegramMessageId)))
     .returning({ id: proposedActions.id });
   return updated.length > 0;
 }
