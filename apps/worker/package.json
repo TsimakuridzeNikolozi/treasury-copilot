@@ -5,9 +5,9 @@
   "type": "module",
   "main": "./dist/index.js",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "tsx watch --env-file=.env src/index.ts",
     "build": "tsup",
-    "start": "node dist/index.js",
+    "start": "node --env-file=.env dist/index.js",
     "lint": "biome check src",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
@@ -20,6 +20,7 @@
     "@tc/policy": "workspace:*",
     "@tc/signer": "workspace:*",
     "@tc/types": "workspace:*",
+    "grammy": "^1.42.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {

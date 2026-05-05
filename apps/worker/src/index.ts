@@ -1,18 +1,25 @@
+import { bot } from './bot';
 import { env } from './env';
+import { startActionPoller } from './poller';
 
 console.log(`[worker] booting in ${env.NODE_ENV} mode`);
 
-// TODO(phase-1): wire up Telegram bot (grammy), DB client, approval handlers.
+const stopPoller = startActionPoller();
 
-const shutdown = (signal: string) => {
-  console.log(`[worker] received ${signal}, shutting down gracefully`);
+const shutdown = async (signal: string) => {
+  console.log(`[worker] received ${signal}, shutting down`);
+  stopPoller();
+  await bot.stop();
   process.exit(0);
 };
 
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));
 
-console.log('[worker] up — idle until phase-1 handlers land');
-
-// Keep the process alive without busy-looping.
-setInterval(() => {}, 1 << 30);
+// `drop_pending_updates: true` in dev so a restart doesn't replay every queued
+// click; `false` in prod so a deploy doesn't lose approvals that arrived while
+// the worker was restarting. bot.start() blocks until bot.stop() is called.
+await bot.start({
+  drop_pending_updates: env.NODE_ENV === 'development',
+  onStart: (info) => console.log(`[worker] @${info.username} started`),
+});
