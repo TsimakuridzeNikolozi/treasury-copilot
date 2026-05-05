@@ -322,38 +322,6 @@ OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-5.4-mini
 ```
 
-### Using QVAC (local-first, by Tether)
-
-QVAC runs models on-device — useful for privacy-sensitive operators. Its HTTP server is OpenAI-API-compatible, so the OpenAI provider plugs in unchanged with a custom `baseURL`.
-
-One-time install:
-
-```bash
-pnpm add -g @qvac/cli
-```
-
-QVAC needs a model alias declared in `qvac.config.json` at the repo root before the server exposes `/v1/chat/completions`. The repo already includes one (`QWEN3_600M_INST_Q4` aliased to itself, set as the default and preloaded) — extend it if you want a different model.
-
-In one terminal, start the server from the repo root (binds 127.0.0.1:11434):
-
-```bash
-qvac serve openai
-```
-
-First boot downloads the model (~2 GB for the 3B); subsequent boots are warm. If you skipped the config, you'll see "No models configured for preload" and the chat-completions endpoint will be missing — start it from the repo root so it picks up `qvac.config.json`.
-
-In `apps/web/.env.local`:
-
-```bash
-MODEL_PROVIDER=qvac
-QVAC_BASE_URL=http://localhost:11434/v1
-QVAC_MODEL=QWEN3_600M_INST_Q4
-```
-
-> **Port collision with Ollama:** Ollama also defaults to 11434. Run QVAC on a different port: `qvac serve openai -p 11435`, and update `QVAC_BASE_URL` to match.
-
-> **Model size vs tool-calling fidelity:** smaller models (1B) often hallucinate tool arguments. The trust boundary catches these (`policy.evaluate` rejects malformed amounts/addresses) — funds are safe, but UX suffers. Pick the largest model your hardware sustains.
-
 ### Smoke-testing the chat
 
 ```bash

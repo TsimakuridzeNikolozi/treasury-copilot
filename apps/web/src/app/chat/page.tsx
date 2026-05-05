@@ -41,7 +41,6 @@ const SESSION_ID = 'dev-session';
 const PROVIDER_LABELS: Record<ModelProvider, string> = {
   anthropic: 'Claude (Anthropic)',
   openai: 'GPT (OpenAI)',
-  qvac: 'QVAC (local)',
 };
 
 // Module-scoped: useChat captures the transport on mount and does not re-bind
