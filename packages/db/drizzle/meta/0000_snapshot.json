@@ -63,12 +63,8 @@
           "name": "approvals_action_id_proposed_actions_id_fk",
           "tableFrom": "approvals",
           "tableTo": "proposed_actions",
-          "columnsFrom": [
-            "action_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["action_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -159,12 +155,8 @@
           "name": "audit_logs_action_id_proposed_actions_id_fk",
           "tableFrom": "audit_logs",
           "tableTo": "proposed_actions",
-          "columnsFrom": [
-            "action_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["action_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -309,13 +301,7 @@
     "public.action_status": {
       "name": "action_status",
       "schema": "public",
-      "values": [
-        "pending",
-        "approved",
-        "denied",
-        "executed",
-        "failed"
-      ]
+      "values": ["pending", "approved", "denied", "executed", "failed"]
     }
   },
   "schemas": {},
