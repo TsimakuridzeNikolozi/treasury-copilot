@@ -8,8 +8,6 @@ import {
   openaiApiKeySchema,
   openaiModelSchema,
   publicAppUrlSchema,
-  qvacBaseUrlSchema,
-  qvacModelSchema,
   solanaRpcUrlSchema,
 } from '@tc/env';
 
@@ -24,8 +22,6 @@ export const env = createEnv({
     ANTHROPIC_MODEL: anthropicModelSchema,
     OPENAI_API_KEY: openaiApiKeySchema,
     OPENAI_MODEL: openaiModelSchema,
-    QVAC_BASE_URL: qvacBaseUrlSchema,
-    QVAC_MODEL: qvacModelSchema,
   },
   client: {
     NEXT_PUBLIC_APP_URL: publicAppUrlSchema,

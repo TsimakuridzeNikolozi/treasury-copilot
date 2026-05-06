@@ -59,7 +59,7 @@ When adding a new tool or signer method, **never bypass this chain**. Don't add 
 
 ### AI provider abstraction
 
-Three pluggable backends — Anthropic Claude, OpenAI, and QVAC (local-first via Tether). Picked at runtime via `MODEL_PROVIDER`. All three plug in through a single switch in `apps/web/src/lib/ai/model.ts`; QVAC reuses the OpenAI provider with a custom `baseURL` since `qvac serve openai` is OpenAI-API-compatible. **Don't import `@ai-sdk/anthropic` or `@ai-sdk/openai` from anywhere else** — that breaks the swap. The trust boundary is unchanged: whichever model proposes, `policy.evaluate()` decides.
+Two pluggable backends — Anthropic Claude and OpenAI. Picked at runtime via `MODEL_PROVIDER`. Both plug in through a single switch in `apps/web/src/lib/ai/model.ts`. **Don't import `@ai-sdk/anthropic` or `@ai-sdk/openai` from anywhere else** — that breaks the swap. The trust boundary is unchanged: whichever model proposes, `policy.evaluate()` decides.
 
 The orchestration helper `proposeAction(db, action, ctx)` lives in `@tc/agent-tools/src/propose.ts` and wires `sumAutoApprovedSince → evaluate → insertProposedAction` in one call. Vercel AI SDK tool definitions in the same package wrap it. The chat route (`apps/web/src/app/api/chat/route.ts`) is a thin shim around `streamText({ tools, messages })`.
 
