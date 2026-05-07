@@ -122,7 +122,7 @@ Biome only. **Do not add ESLint or Prettier.** Run `pnpm exec biome check --writ
 These are first-feature work, not setup. When asked to "add X", check this list — if it's here, the answer is "yes, that's phase-1 work, not a config tweak":
 
 - Auth (Privy / Turnkey)
-- Solana RPC client and protocol SDKs (Kamino, Drift, Marginfi) — `packages/protocols` is stubs only
+- Protocol SDK coverage in `packages/protocols`: Kamino and Save are wired end-to-end (deposit + withdraw); Drift and Marginfi builders are still stubs
 - Telegram bot client (grammy) in `apps/worker/src/bot.ts`
 - Signer implementation (the `@tc/signer.executeApproved` interface exists; no provider yet)
 - A `policies` table — phase-1 rules live in `packages/policy/src/index.ts` (`DEFAULT_POLICY`)
