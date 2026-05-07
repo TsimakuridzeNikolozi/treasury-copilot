@@ -4,7 +4,11 @@ import {
   SystemProgram,
   type TransactionInstruction,
 } from '@solana/web3.js';
-import { KLEND_PROGRAM_ID_BASE58, buildKaminoDepositInstructions } from '@tc/protocols/kamino';
+import {
+  KLEND_PROGRAM_ID_BASE58,
+  buildKaminoDepositInstructions,
+  buildKaminoWithdrawInstructions,
+} from '@tc/protocols/kamino';
 import type { ExecuteResult, PolicyDecision } from '@tc/types';
 import { signSubmitConfirm } from './submit';
 import { loadTreasuryKeypair } from './wallet';
@@ -66,6 +70,19 @@ const KAMINO_DEPOSIT_ALLOWED_PROGRAMS = new Set<string>([
   ATA_PROGRAM,
   SPL_TOKEN_PROGRAM,
   // First-time user setup creates a per-user lookup table.
+  ADDRESS_LOOKUP_TABLE_PROGRAM,
+]);
+
+// Same set as deposit. By the time withdraw runs, the user's metadata + LUT
+// already exist (created on the first deposit) so the LUT program normally
+// won't appear, but the SDK occasionally emits LUT extension ixs on this
+// path — keeping it in the allowlist avoids a spurious rejection.
+const KAMINO_WITHDRAW_ALLOWED_PROGRAMS = new Set<string>([
+  KLEND_PROGRAM_ID_BASE58,
+  SYSTEM_PROGRAM,
+  COMPUTE_BUDGET_PROGRAM,
+  ATA_PROGRAM,
+  SPL_TOKEN_PROGRAM,
   ADDRESS_LOOKUP_TABLE_PROGRAM,
 ]);
 
@@ -134,8 +151,14 @@ export function createSigner(config: SignerConfig): Signer {
           owner: keypair.publicKey,
         });
         allowedPrograms = KAMINO_DEPOSIT_ALLOWED_PROGRAMS;
+      } else if (action.kind === 'withdraw' && action.venue === 'kamino') {
+        instructions = await buildKaminoWithdrawInstructions(action, {
+          connection,
+          owner: keypair.publicKey,
+        });
+        allowedPrograms = KAMINO_WITHDRAW_ALLOWED_PROGRAMS;
       } else {
-        // TODO(2C–2F): Drift, Marginfi, withdraw, rebalance.
+        // TODO(2D–2F): Drift, Marginfi, rebalance.
         instructions = [
           SystemProgram.transfer({
             fromPubkey: keypair.publicKey,

@@ -10,7 +10,7 @@ import {
   PublicKey,
   type TransactionInstruction,
 } from '@solana/web3.js';
-import type { DepositAction } from '@tc/types';
+import type { DepositAction, WithdrawAction } from '@tc/types';
 import BN from 'bn.js';
 import Decimal from 'decimal.js';
 
@@ -115,6 +115,67 @@ export async function buildKaminoDepositInstructions(
   // above; once the user's metadata + LUT are initialized on-chain, future
   // deposits skip this setup path entirely.
   const kaminoAction = await KaminoAction.buildDepositTxns(
+    market,
+    baseUnits,
+    USDC_MINT,
+    ctx.owner,
+    new VanillaObligation(KLEND_PROGRAM_ID),
+    /* useV2Ixs */ true,
+    /* scopeRefreshConfig */ undefined,
+    /* extraComputeBudget */ 1_000_000,
+    /* includeAtaIxs */ true,
+    /* requestElevationGroup */ false,
+  );
+
+  return [
+    ...kaminoAction.computeBudgetIxs,
+    ...kaminoAction.setupIxs,
+    ...kaminoAction.lendingIxs,
+    ...kaminoAction.cleanupIxs,
+  ];
+}
+
+// Mirror of buildKaminoDepositInstructions for withdrawals from the same
+// reserve. Requires the owner to have an existing obligation (created by a
+// prior deposit); if not, KaminoAction.buildWithdrawTxns errors and the
+// signer surfaces it as ExecuteResult.failure.
+//
+// TODO: phase-2 reads will introduce a "max withdraw" flow. The SDK's
+// max-withdraw sentinel is U64_MAX (= "18446744073709551615"); pass that as
+// the `amount` arg to drain the reserve and (optionally) close the obligation.
+// Not exposed in WithdrawAction yet — defer until we can read positions.
+export async function buildKaminoWithdrawInstructions(
+  action: WithdrawAction,
+  ctx: KaminoCtx,
+): Promise<TransactionInstruction[]> {
+  const connection = withFinalizedSlot(ctx.connection);
+
+  const market = await KaminoMarket.load(
+    connection,
+    KAMINO_MAIN_MARKET,
+    RECENT_SLOT_DURATION_MS,
+    KLEND_PROGRAM_ID,
+  );
+  if (!market) {
+    throw new Error(`Kamino market ${KAMINO_MAIN_MARKET.toBase58()} did not load`);
+  }
+
+  // Same validation + ROUND_DOWN conversion as deposit. Two duplicated copies
+  // is fine for now; if a third venue grows the same shape, extract a helper.
+  const amount = new Decimal(action.amountUsdc);
+  if (!amount.isFinite() || amount.lte(0)) {
+    throw new Error(`invalid amountUsdc: ${action.amountUsdc}`);
+  }
+  if (amount.decimalPlaces() > USDC_DECIMALS) {
+    throw new Error(
+      `amountUsdc ${action.amountUsdc} exceeds USDC precision (${USDC_DECIMALS} decimals)`,
+    );
+  }
+  const baseUnits = new BN(
+    amount.mul(new Decimal(10).pow(USDC_DECIMALS)).toFixed(0, Decimal.ROUND_DOWN),
+  );
+
+  const kaminoAction = await KaminoAction.buildWithdrawTxns(
     market,
     baseUnits,
     USDC_MINT,
