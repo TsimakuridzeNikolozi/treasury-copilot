@@ -23,6 +23,36 @@ export interface SignSubmitConfirmOpts {
   onSignature?: (signature: string) => Promise<void>;
 }
 
+// Once the tx has hit the wire, we cannot terminally fail just because our
+// confirmation path threw or timed out — the cluster might still land it.
+// Ask for the cluster's view; if it knows the tx reverted, fail; if it
+// knows the tx confirmed at our requested commitment, succeed; otherwise
+// stay pending so the executor leaves the row in `executing` for boot
+// recovery to finish.
+async function resolvePostBroadcastOutcome(
+  connection: Connection,
+  signature: string,
+  commitment: Commitment,
+  reason: string,
+): Promise<ExecuteResult> {
+  const final = await connection
+    .getSignatureStatuses([signature], { searchTransactionHistory: true })
+    .then((r) => r.value[0])
+    .catch(() => null);
+  if (final?.err) {
+    return { kind: 'failure', error: `tx reverted: ${JSON.stringify(final.err)}` };
+  }
+  const status = final?.confirmationStatus;
+  if (
+    status === 'confirmed' ||
+    status === 'finalized' ||
+    (status === 'processed' && commitment === 'processed')
+  ) {
+    return { kind: 'success', txSignature: signature };
+  }
+  return { kind: 'pending', txSignature: signature, reason };
+}
+
 // Builds a legacy Transaction, signs, persists the signature via onSignature,
 // submits, and races confirmation against a hard timeout. confirmTransaction
 // hangs indefinitely on a stalled RPC; without the race a worker could sit on
@@ -38,6 +68,10 @@ export async function signSubmitConfirm(opts: SignSubmitConfirmOpts): Promise<Ex
   const { connection, keypair, instructions, commitment, timeoutMs, onSignature } = opts;
 
   let timeoutHandle: NodeJS.Timeout | undefined;
+  // Tracks whether sendRawTransaction returned successfully. The catch below
+  // must distinguish pre-broadcast errors (terminal failure — nothing on the
+  // wire) from post-broadcast errors (uncertain — could still land).
+  let broadcastedSignature: string | undefined;
   try {
     const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash(commitment);
     const tx = new Transaction({
@@ -72,6 +106,7 @@ export async function signSubmitConfirm(opts: SignSubmitConfirmOpts): Promise<Ex
       skipPreflight: false,
       preflightCommitment: commitment,
     });
+    broadcastedSignature = signature;
 
     const confirmPromise = connection.confirmTransaction(
       { signature, blockhash, lastValidBlockHeight },
@@ -84,30 +119,12 @@ export async function signSubmitConfirm(opts: SignSubmitConfirmOpts): Promise<Ex
     const raced = await Promise.race([confirmPromise, timeoutPromise]);
 
     if (raced === TIMEOUT_SENTINEL) {
-      // Confirmation timed out, but the tx was already broadcast and may
-      // still land. Do one final status check before giving up — if the
-      // cluster knows it confirmed, return success; if reverted, failure;
-      // otherwise return pending so the executor leaves the row in
-      // `executing` for the next boot's recovery sweep. Force-failing here
-      // would risk a double-execute if the tx eventually lands.
-      const final = await connection
-        .getSignatureStatuses([signature], { searchTransactionHistory: true })
-        .then((r) => r.value[0])
-        .catch(() => null);
-      if (final?.err) {
-        return {
-          kind: 'failure',
-          error: `tx reverted: ${JSON.stringify(final.err)}`,
-        };
-      }
-      if (final?.confirmationStatus === 'confirmed' || final?.confirmationStatus === 'finalized') {
-        return { kind: 'success', txSignature: signature };
-      }
-      return {
-        kind: 'pending',
-        txSignature: signature,
-        reason: 'confirmation timeout; cluster status unsettled',
-      };
+      return resolvePostBroadcastOutcome(
+        connection,
+        signature,
+        commitment,
+        'confirmation timeout; cluster status unsettled',
+      );
     }
 
     if (raced.value.err) {
@@ -118,6 +135,19 @@ export async function signSubmitConfirm(opts: SignSubmitConfirmOpts): Promise<Ex
     }
     return { kind: 'success', txSignature: signature };
   } catch (err) {
+    // If the tx already hit the wire, an RPC/transport error here doesn't
+    // mean the tx failed — only that our view of it failed. Resolve via
+    // cluster status; if still unsettled, return pending so recovery can
+    // finish it. Errors before broadcast remain terminal.
+    if (broadcastedSignature) {
+      const reason = `post-broadcast error: ${err instanceof Error ? err.message : String(err)}`;
+      return resolvePostBroadcastOutcome(
+        opts.connection,
+        broadcastedSignature,
+        opts.commitment,
+        reason,
+      );
+    }
     return { kind: 'failure', error: err instanceof Error ? err.message : String(err) };
   } finally {
     if (timeoutHandle) clearTimeout(timeoutHandle);

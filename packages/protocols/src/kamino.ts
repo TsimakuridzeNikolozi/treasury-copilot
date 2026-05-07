@@ -92,8 +92,20 @@ export async function buildKaminoDepositInstructions(
   }
 
   // amountUsdc is a decimal string ("5.0"); SDK takes base units (BN).
+  // Validate before converting: silently rounding sub-base-unit precision
+  // would over-deposit (default toFixed rounds half-up), and a negative or
+  // non-finite amount must never reach the SDK.
+  const amount = new Decimal(action.amountUsdc);
+  if (!amount.isFinite() || amount.lte(0)) {
+    throw new Error(`invalid amountUsdc: ${action.amountUsdc}`);
+  }
+  if (amount.decimalPlaces() > USDC_DECIMALS) {
+    throw new Error(
+      `amountUsdc ${action.amountUsdc} exceeds USDC precision (${USDC_DECIMALS} decimals)`,
+    );
+  }
   const baseUnits = new BN(
-    new Decimal(action.amountUsdc).mul(new Decimal(10).pow(USDC_DECIMALS)).toFixed(0),
+    amount.mul(new Decimal(10).pow(USDC_DECIMALS)).toFixed(0, Decimal.ROUND_DOWN),
   );
 
   // useV2Ixs=true selects the V2 lending instruction format (supports

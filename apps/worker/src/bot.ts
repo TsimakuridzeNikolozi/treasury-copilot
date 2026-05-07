@@ -91,7 +91,17 @@ bot.callbackQuery(
         return;
       }
       console.error('[bot] decision failed', err);
-      await ctx.answerCallbackQuery({ text: 'Error recording decision', show_alert: true });
+      // The callback was already answered at the top of the handler — Telegram
+      // rejects a second answer for the same callback ID. Surface the error by
+      // editing the card instead.
+      await ctx
+        .editMessageText('<i>Error recording decision. Please try again.</i>', {
+          parse_mode: 'HTML',
+        })
+        .catch(() => {
+          // editMessageText can fail (>48h, identical content). Diagnostics
+          // are already logged above; nothing useful left to do.
+        });
     }
   },
 );

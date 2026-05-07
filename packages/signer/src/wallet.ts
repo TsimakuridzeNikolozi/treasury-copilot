@@ -19,8 +19,21 @@ export function loadTreasuryKeypair(path: string): Keypair {
 
   const raw = readFileSync(path, 'utf8');
   const parsed = JSON.parse(raw);
-  if (!Array.isArray(parsed) || !parsed.every((n) => typeof n === 'number')) {
-    throw new Error(`treasury keypair at ${path} is not in Solana CLI format (expected number[])`);
+  // Solana CLI keypair = exactly 64 bytes (ed25519 secret + public). Without
+  // a strict check, Uint8Array.from silently coerces NaN→0, truncates floats,
+  // and wraps out-of-range values, which would yield a corrupted key with a
+  // confusing downstream error.
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length !== 64 ||
+    !parsed.every(
+      (n) =>
+        typeof n === 'number' && Number.isInteger(n) && Number.isFinite(n) && n >= 0 && n <= 255,
+    )
+  ) {
+    throw new Error(
+      `treasury keypair at ${path} is not in Solana CLI format (expected 64-byte array of integers 0..255)`,
+    );
   }
   return Keypair.fromSecretKey(Uint8Array.from(parsed));
 }

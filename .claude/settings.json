@@ -12,7 +12,9 @@
       "Bash(xxd ./keys/**)",
       "Bash(xxd **/*.keypair.json)",
       "Bash(head ./keys/**)",
-      "Bash(tail ./keys/**)"
+      "Bash(head **/*.keypair.json)",
+      "Bash(tail ./keys/**)",
+      "Bash(tail **/*.keypair.json)"
     ]
   }
 }

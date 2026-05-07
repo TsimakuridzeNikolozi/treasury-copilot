@@ -10,6 +10,20 @@ import {
 import { createSigner } from '@tc/signer';
 import type { ExecuteResult } from '@tc/types';
 import { editApprovalCardWithExecution } from './bot';
+
+// editApprovalCardWithExecution can fail (>48h message, network blip). DB is
+// the source of truth; failing the card is cosmetic, not a recovery error.
+async function safeEditCard(
+  row: Awaited<ReturnType<typeof transitionAction>>,
+  result: Extract<ExecuteResult, { kind: 'success' | 'failure' }>,
+): Promise<void> {
+  try {
+    const attribution = await getApprovalAttribution(db, row.id);
+    await editApprovalCardWithExecution(row, result, attribution);
+  } catch (editErr) {
+    console.error(`[executor] failed to edit Telegram card for ${row.id}:`, editErr);
+  }
+}
 import { db } from './db';
 import { env } from './env';
 
@@ -21,6 +35,11 @@ const signer = createSigner({
 });
 
 let timer: NodeJS.Timeout | null = null;
+let starting = false;
+// Stop requested between startExecutor() and the .finally() that arms the
+// interval. The bootstrap path checks this and skips arming so a shutdown
+// signal during boot is honored.
+let stopRequestedDuringStart = false;
 let inFlight = false;
 
 // One tick: find approved rows, claim each atomically (approved → executing),
@@ -215,19 +234,18 @@ async function recoverInFlight(): Promise<void> {
       const sig = row.txSignature;
       const status = await signer.checkSignatureStatus(sig);
       if (status.kind === 'reverted') {
-        await transitionAction(db, {
+        const error = `recovery: tx reverted: ${JSON.stringify(status.err)}`;
+        const updated = await transitionAction(db, {
           id: row.id,
           from: 'executing',
           to: 'failed',
           actor: 'signer',
-          payload: {
-            error: `recovery: tx reverted: ${JSON.stringify(status.err)}`,
-            txSignature: sig,
-          },
+          payload: { error, txSignature: sig },
         });
         console.warn(`[executor] action ${row.id} recovered → failed (reverted) ${sig}`);
+        await safeEditCard(updated, { kind: 'failure', error });
       } else if (status.kind === 'confirmed') {
-        await transitionAction(db, {
+        const updated = await transitionAction(db, {
           id: row.id,
           from: 'executing',
           to: 'executed',
@@ -235,6 +253,7 @@ async function recoverInFlight(): Promise<void> {
           payload: { txSignature: sig },
         });
         console.log(`[executor] action ${row.id} recovered → executed ${sig}`);
+        await safeEditCard(updated, { kind: 'success', txSignature: sig });
       } else {
         // pending: cluster knows the tx but hasn't confirmed it, OR the RPC
         // hasn't indexed it yet. Leave in `executing` for the next sweep —
@@ -255,29 +274,40 @@ async function recoverInFlight(): Promise<void> {
   }
 }
 
-export function startExecutor(): () => void {
+function stopExecutor(): void {
   if (timer) {
+    clearInterval(timer);
+    timer = null;
+  }
+  // Bootstrap is still running — flag it so the .finally() doesn't arm an
+  // interval we'd then leak. Without this, a stop() during recovery is a
+  // no-op against null timer and the interval scheduled in finally() is
+  // never cancelled.
+  if (starting) {
+    stopRequestedDuringStart = true;
+  }
+}
+
+export function startExecutor(): () => void {
+  if (timer || starting) {
     console.log('[executor] already running, ignoring duplicate start');
-    return () => {
-      if (timer) {
-        clearInterval(timer);
-        timer = null;
-      }
-    };
+    return stopExecutor;
   }
   console.log(`[executor] starting (interval=${env.EXECUTOR_POLL_INTERVAL_MS}ms)`);
+  starting = true;
+  stopRequestedDuringStart = false;
   // Recover first, then start the normal poll loop. If recovery fails, log
   // and continue — a stuck row won't block fresh actions.
   void recoverInFlight()
     .catch((err) => console.error('[executor] recovery loop crashed:', err))
     .finally(() => {
+      starting = false;
+      if (stopRequestedDuringStart) {
+        stopRequestedDuringStart = false;
+        return;
+      }
       void tick();
       timer = setInterval(() => void tick(), env.EXECUTOR_POLL_INTERVAL_MS);
     });
-  return () => {
-    if (timer) {
-      clearInterval(timer);
-      timer = null;
-    }
-  };
+  return stopExecutor;
 }
