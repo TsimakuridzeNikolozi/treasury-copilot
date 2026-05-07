@@ -10,6 +10,15 @@ export function isModelProvider(value: unknown): value is ModelProvider {
   return typeof value === 'string' && (MODEL_PROVIDERS as readonly string[]).includes(value);
 }
 
+// Snapshot the native fetch at module load. The AI SDK reads `globalThis.fetch`
+// at request time (`getOriginalFetch = () => globalThis.fetch`); if any
+// transitive Solana SDK dep monkey-patches the global with a node-fetch v2
+// shim (whose Response.body is a Node Readable, not a WebStream), the SDK's
+// `response.body.pipeThrough(...)` call breaks. Locking the provider's fetch
+// at import time freezes us on the native implementation regardless of later
+// pollution.
+const nativeFetch: typeof fetch = globalThis.fetch.bind(globalThis);
+
 // Single seam for swapping AI providers. Add a third provider here only —
 // callers (route handlers, tests) never import @ai-sdk/* directly.
 //
@@ -22,13 +31,17 @@ export function modelFor(provider: ModelProvider = env.MODEL_PROVIDER): Language
       if (!env.ANTHROPIC_API_KEY) {
         throw new Error('ANTHROPIC_API_KEY is required when MODEL_PROVIDER=anthropic');
       }
-      return createAnthropic({ apiKey: env.ANTHROPIC_API_KEY })(env.ANTHROPIC_MODEL);
+      return createAnthropic({ apiKey: env.ANTHROPIC_API_KEY, fetch: nativeFetch })(
+        env.ANTHROPIC_MODEL,
+      );
     }
     case 'openai': {
       if (!env.OPENAI_API_KEY) {
         throw new Error('OPENAI_API_KEY is required when MODEL_PROVIDER=openai');
       }
-      return createOpenAI({ apiKey: env.OPENAI_API_KEY }).chat(env.OPENAI_MODEL);
+      return createOpenAI({ apiKey: env.OPENAI_API_KEY, fetch: nativeFetch }).chat(
+        env.OPENAI_MODEL,
+      );
     }
   }
 }

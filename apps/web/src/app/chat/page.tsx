@@ -100,11 +100,14 @@ export default function ChatPage() {
                 title="No messages yet"
               />
             ) : (
-              messages.map((m) => (
-                <Message from={m.role} key={m.id}>
+              // Multi-step turns (stepCountIs > 1) occasionally yield two
+              // messages with the same id in useChat's array. Index tiebreaker
+              // keeps React keys unique without changing message semantics.
+              messages.map((m, mi) => (
+                <Message from={m.role} key={`${m.id}-${mi}`}>
                   <MessageContent>
                     {m.parts.map((part, i) => {
-                      const key = `${m.id}-${i}`;
+                      const key = `${m.id}-${mi}-${i}`;
                       if (part.type === 'text') {
                         return (
                           <p className="whitespace-pre-wrap" key={key}>

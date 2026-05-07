@@ -10,7 +10,8 @@
     "./kamino": "./src/kamino.ts",
     "./save": "./src/save.ts",
     "./drift": "./src/drift.ts",
-    "./marginfi": "./src/marginfi.ts"
+    "./marginfi": "./src/marginfi.ts",
+    "./usdc": "./src/usdc.ts"
   },
   "scripts": {
     "lint": "biome check src",

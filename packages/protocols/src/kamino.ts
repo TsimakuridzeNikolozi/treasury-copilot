@@ -199,3 +199,67 @@ export async function buildKaminoWithdrawInstructions(
     extraSigners: [],
   };
 }
+
+// Format a human-USDC Decimal (already divided by 10^decimals) into a string
+// with up to 6 fraction digits, trailing zeros trimmed. Mirrors the rendering
+// shape of ProposedAction.amountUsdc so chat tool output is interchangeable.
+function formatUsdcHuman(amount: Decimal): string {
+  if (amount.lte(0)) return '0';
+  return amount.toFixed(USDC_DECIMALS).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+// Fetch the current supply APY for the USDC reserve in Kamino Main Market as
+// a decimal (e.g. 0.0523 for 5.23%). KaminoMarket.load is ~1 RPC;
+// totalSupplyAPY is a pure function of reserve state + slot. No caching —
+// chat tool calls this once per snapshot.
+export async function getKaminoUsdcSupplyApy(
+  connection: Connection,
+): Promise<{ apyDecimal: number }> {
+  const market = await KaminoMarket.load(
+    connection,
+    KAMINO_MAIN_MARKET,
+    RECENT_SLOT_DURATION_MS,
+    KLEND_PROGRAM_ID,
+  );
+  if (!market) {
+    throw new Error(`Kamino market ${KAMINO_MAIN_MARKET.toBase58()} did not load`);
+  }
+  const reserve = market.getReserveByMint(USDC_MINT);
+  if (!reserve) {
+    throw new Error(`USDC reserve not found in Kamino market ${KAMINO_MAIN_MARKET.toBase58()}`);
+  }
+  const slot = await connection.getSlot('confirmed');
+  return { apyDecimal: reserve.totalSupplyAPY(slot) };
+}
+
+// Fetch how much USDC `owner` has supplied into Kamino Main Market's USDC
+// reserve. Returns '0' if the owner has no obligation yet (first read before
+// any deposit). Decimal-USDC string, 6-digit precision, trailing zeros trimmed.
+export async function getKaminoUsdcPosition(
+  connection: Connection,
+  owner: PublicKey,
+): Promise<{ amountUsdc: string }> {
+  const market = await KaminoMarket.load(
+    connection,
+    KAMINO_MAIN_MARKET,
+    RECENT_SLOT_DURATION_MS,
+    KLEND_PROGRAM_ID,
+  );
+  if (!market) {
+    throw new Error(`Kamino market ${KAMINO_MAIN_MARKET.toBase58()} did not load`);
+  }
+  const obligation = await market.getObligationByWallet(
+    owner,
+    new VanillaObligation(KLEND_PROGRAM_ID),
+  );
+  if (!obligation) {
+    return { amountUsdc: '0' };
+  }
+  const reserve = market.getReserveByMint(USDC_MINT);
+  if (!reserve) {
+    throw new Error(`USDC reserve not found in Kamino market ${KAMINO_MAIN_MARKET.toBase58()}`);
+  }
+  // getDepositAmountByReserve already divides by mint factor, so the value is
+  // human-USDC (e.g. 0.75), not base units.
+  return { amountUsdc: formatUsdcHuman(obligation.getDepositAmountByReserve(reserve)) };
+}

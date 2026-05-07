@@ -1,4 +1,9 @@
-import { Keypair, type TransactionInstruction } from '@solana/web3.js';
+import {
+  type Connection,
+  Keypair,
+  type PublicKey,
+  type TransactionInstruction,
+} from '@solana/web3.js';
 import {
   type InputReserveType,
   type InstructionWithSigners,
@@ -7,6 +12,9 @@ import {
   type SaveWallet,
   SolendActionCore,
   WRAPPER_PROGRAM_ID,
+  calculateSupplyInterest,
+  fetchObligationsOfPoolByWallet,
+  fetchPoolByAddress,
 } from '@solendprotocol/solend-sdk';
 import type { DepositAction, WithdrawAction } from '@tc/types';
 import BN from 'bn.js';
@@ -203,4 +211,92 @@ export async function buildSaveWithdrawInstructions(
     grouped.postLendingIxs,
   ]);
   return { instructions: ixs, extraSigners: signers };
+}
+
+// Format a base-unit Decimal into a decimal-USDC string with up to 6 fraction
+// digits, trailing zeros trimmed. Mirrors ProposedAction.amountUsdc shape.
+function formatUsdcAmount(baseUnits: Decimal): string {
+  if (baseUnits.lte(0)) return '0';
+  const usdc = baseUnits.div(new Decimal(10).pow(USDC_DECIMALS));
+  return usdc.toFixed(USDC_DECIMALS).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+// Fetch the current supply APY for the USDC reserve in Save Main Pool as a
+// fractional decimal (0.0523 = 5.23%). Same shape as Kamino's APY return so
+// the chat tool can render them side-by-side. One RPC roundtrip
+// (fetchPoolByAddress despite the name fetches a single reserve account).
+export async function getSaveUsdcSupplyApy(
+  connection: Connection,
+): Promise<{ apyDecimal: number }> {
+  const reserve = await fetchPoolByAddress(SAVE_USDC_RESERVE.address, connection);
+  if (!reserve) {
+    throw new Error(`Save USDC reserve ${SAVE_USDC_RESERVE.address} did not load`);
+  }
+  // calculateSupplyInterest with showApy=true returns APY as a fractional
+  // BigNumber (utilization × borrowAPR × (1 - protocolTake) compounded by
+  // SLOTS_PER_YEAR). Mirrors Kamino's totalSupplyAPY units.
+  const apy = calculateSupplyInterest(reserve.info, true);
+  return { apyDecimal: apy.toNumber() };
+}
+
+// Fetch how much USDC `owner` has supplied into Save Main Pool's USDC reserve.
+// Returns '0' if the owner has no obligation yet. Decimal-USDC string with
+// 6-digit precision, trailing zeros trimmed — matches ProposedAction.amountUsdc.
+//
+// Save deposits are stored as cTokens; the human-USDC amount needs the
+// reserve's exchange rate. Computed manually from raw reserve fields rather
+// than going through formatReserve/formatObligation (those carry a heavy
+// price + metadata path we don't need).
+export async function getSaveUsdcPosition(
+  connection: Connection,
+  owner: PublicKey,
+): Promise<{ amountUsdc: string }> {
+  const [reserve, obligations] = await Promise.all([
+    fetchPoolByAddress(SAVE_USDC_RESERVE.address, connection),
+    fetchObligationsOfPoolByWallet(
+      owner,
+      MAIN_POOL_ADDRESS,
+      SOLEND_PRODUCTION_PROGRAM_ID,
+      connection,
+    ),
+  ]);
+  if (!reserve) {
+    throw new Error(`Save USDC reserve ${SAVE_USDC_RESERVE.address} did not load`);
+  }
+  if (obligations.length === 0) {
+    return { amountUsdc: '0' };
+  }
+
+  // Sum collateral across any obligations the wallet has in Main Pool.
+  // In practice there's one; SDK API returns an array for generality.
+  let totalCTokens = new Decimal(0);
+  const usdcReserveBase58 = SAVE_USDC_RESERVE.address;
+  for (const ob of obligations) {
+    for (const dep of ob.info.deposits) {
+      if (dep.depositReserve.toBase58() === usdcReserveBase58) {
+        totalCTokens = totalCTokens.plus(new Decimal(dep.depositedAmount.toString()));
+      }
+    }
+  }
+  if (totalCTokens.lte(0)) {
+    return { amountUsdc: '0' };
+  }
+
+  // cToken → underlying USDC, base units throughout. Mirrors formatReserve's
+  // exchange rate calc: totalSupply = available + borrowed - protocolFees,
+  // exchangeRate = totalSupply / cTokenMintTotalSupply.
+  const WAD = new Decimal(10).pow(18);
+  const availableAmount = new Decimal(reserve.info.liquidity.availableAmount.toString());
+  const borrowedAmount = new Decimal(reserve.info.liquidity.borrowedAmountWads.toString()).div(WAD);
+  const protocolFees = new Decimal(
+    reserve.info.liquidity.accumulatedProtocolFeesWads.toString(),
+  ).div(WAD);
+  const totalSupplyBaseUnits = availableAmount.plus(borrowedAmount).minus(protocolFees);
+  const cTokenMintSupply = new Decimal(reserve.info.collateral.mintTotalSupply.toString());
+  if (cTokenMintSupply.lte(0)) {
+    // Pre-launch reserve with no liquidity; treat as 0 to avoid div-by-zero.
+    return { amountUsdc: '0' };
+  }
+  const usdcBaseUnits = totalCTokens.mul(totalSupplyBaseUnits).div(cTokenMintSupply);
+  return { amountUsdc: formatUsdcAmount(usdcBaseUnits) };
 }

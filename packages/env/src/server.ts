@@ -11,6 +11,17 @@ export const solanaRpcUrlSchema = z
   .url()
   .describe('Solana JSON-RPC endpoint (Helius/Triton/etc.)');
 
+// Base58-encoded Solana pubkey (32-byte address, 32–44 chars in base58 with
+// the "no 0/O/I/l" alphabet). Validated by regex here; runtime PublicKey
+// construction at first use will catch the rare subtle case the regex misses.
+export const solanaPubkeyBase58Schema = z
+  .string()
+  .regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/, 'must be a base58-encoded Solana pubkey');
+
+export const treasuryPubkeyBase58Schema = solanaPubkeyBase58Schema.describe(
+  "Treasury wallet's base58 pubkey — used as the default address for read tools (positions, APYs).",
+);
+
 export const nodeEnvSchema = z.enum(['development', 'test', 'production']).default('development');
 
 export const logLevelSchema = z
