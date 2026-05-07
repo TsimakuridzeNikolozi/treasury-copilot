@@ -1,6 +1,6 @@
 {
-  "id": "01f94377-079f-4261-ae46-00b17c36cadc",
-  "prevId": "d061fc70-4851-4ee0-a42d-efdfc93b70b1",
+  "id": "f765020a-7af7-4186-8bde-859e8287519b",
+  "prevId": "772c9faa-4aff-48bf-85db-46656ed20ea4",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -222,6 +222,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "tx_signature": {
+          "name": "tx_signature",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -284,6 +290,22 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "proposed_actions_tx_signature_uq": {
+          "name": "proposed_actions_tx_signature_uq",
+          "columns": [
+            {
+              "expression": "tx_signature",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"proposed_actions\".\"tx_signature\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}

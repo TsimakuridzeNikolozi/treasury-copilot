@@ -15,6 +15,20 @@
       "when": 1777995872682,
       "tag": "0001_add_executing_status",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1778033858178,
+      "tag": "0002_lush_rage",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1778173739059,
+      "tag": "0003_demonic_moondragon",
+      "breakpoints": true
     }
   ]
 }

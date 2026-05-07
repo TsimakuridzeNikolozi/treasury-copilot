@@ -33,3 +33,7 @@ coverage
 
 # misc
 *.pem
+
+# solana keypairs — never commit signing material
+keys/
+*.keypair.json

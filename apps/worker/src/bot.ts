@@ -47,47 +47,54 @@ bot.use(async (ctx, next) => {
 bot.command('ping', (ctx) => ctx.reply('pong'));
 bot.command('whoami', (ctx) => ctx.reply(`Your Telegram id: ${ctx.from?.id}`));
 
-bot.callbackQuery(/^(approve|deny):(.+)$/, async (ctx) => {
-  const decision = ctx.match[1] as 'approve' | 'deny';
-  const actionId = ctx.match[2];
-  if (!actionId) return;
-  const approverId = ctx.from?.id;
-  if (!approverId) return;
+// UUID v4 shape — action ids are uuid-defaultRandom in the schema. Tightening
+// the regex means a malformed callback (we change the keyboard generator,
+// someone pokes the bot manually) never reaches recordApproval as a no-op DB
+// miss — it's silently rejected as an unmatched update instead.
+bot.callbackQuery(
+  /^(approve|deny):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/,
+  async (ctx) => {
+    const decision = ctx.match[1] as 'approve' | 'deny';
+    const actionId = ctx.match[2];
+    if (!actionId) return;
+    const approverId = ctx.from?.id;
+    if (!approverId) return;
 
-  // Acknowledge IMMEDIATELY — Telegram shows a spinner on the button until
-  // the callback is answered. Do this before the DB work so a slow query
-  // doesn't make the UI feel stuck.
-  await ctx.answerCallbackQuery({ text: `Recording ${decision}…` });
+    // Acknowledge IMMEDIATELY — Telegram shows a spinner on the button until
+    // the callback is answered. Do this before the DB work so a slow query
+    // doesn't make the UI feel stuck.
+    await ctx.answerCallbackQuery({ text: `Recording ${decision}…` });
 
-  try {
-    const { action } = await recordApproval(db, {
-      actionId,
-      approverTelegramId: String(approverId),
-      decision,
-      ...(ctx.from?.username ? { meta: { username: ctx.from.username } } : {}),
-    });
+    try {
+      const { action } = await recordApproval(db, {
+        actionId,
+        approverTelegramId: String(approverId),
+        decision,
+        ...(ctx.from?.username ? { meta: { username: ctx.from.username } } : {}),
+      });
 
-    await ctx.editMessageText(formatResolved(action, decision, ctx.from?.username, approverId), {
-      parse_mode: 'HTML',
-    });
-  } catch (err) {
-    if (err instanceof TransitionConflictError) {
-      // A peer approver beat us to it (or the row vanished). Reflect the
-      // current state instead of pretending our click resolved it.
-      await ctx
-        .editMessageText(`<i>Already resolved (${err.actualOrMissing ?? 'missing'}).</i>`, {
-          parse_mode: 'HTML',
-        })
-        .catch(() => {
-          // editMessageText fails if the message is older than 48h or already
-          // edited to identical content. Either way, nothing useful left to do.
-        });
-      return;
+      await ctx.editMessageText(formatResolved(action, decision, ctx.from?.username, approverId), {
+        parse_mode: 'HTML',
+      });
+    } catch (err) {
+      if (err instanceof TransitionConflictError) {
+        // A peer approver beat us to it (or the row vanished). Reflect the
+        // current state instead of pretending our click resolved it.
+        await ctx
+          .editMessageText(`<i>Already resolved (${err.actualOrMissing ?? 'missing'}).</i>`, {
+            parse_mode: 'HTML',
+          })
+          .catch(() => {
+            // editMessageText fails if the message is older than 48h or already
+            // edited to identical content. Either way, nothing useful left to do.
+          });
+        return;
+      }
+      console.error('[bot] decision failed', err);
+      await ctx.answerCallbackQuery({ text: 'Error recording decision', show_alert: true });
     }
-    console.error('[bot] decision failed', err);
-    await ctx.answerCallbackQuery({ text: 'Error recording decision', show_alert: true });
-  }
-});
+  },
+);
 
 bot.catch((err) => {
   console.error(`[bot] error in update ${err.ctx.update.update_id}:`, err.error);
@@ -140,9 +147,14 @@ function formatAttribution(attribution: ApprovalAttribution | null): string {
     : `id ${escapeHtml(attribution.approverTelegramId)}`;
 }
 
+// `pending` is excluded — the executor never edits the card in that case
+// (the row stays `executing` for boot recovery). Narrowing here keeps the
+// formatter total over the cases it actually renders.
+type TerminalExecuteResult = Exclude<ExecuteResult, { kind: 'pending' }>;
+
 function formatExecuted(
   row: ProposedActionRow,
-  result: ExecuteResult,
+  result: TerminalExecuteResult,
   attribution: ApprovalAttribution | null,
 ): string {
   const lines = [summaryLine(row.payload), `<code>${row.id}</code>`, ''];
@@ -171,7 +183,7 @@ export async function postApprovalCard(row: ProposedActionRow): Promise<number> 
 
 export async function editApprovalCardWithExecution(
   row: ProposedActionRow,
-  result: ExecuteResult,
+  result: TerminalExecuteResult,
   attribution: ApprovalAttribution | null,
 ): Promise<void> {
   if (!row.telegramMessageId) {

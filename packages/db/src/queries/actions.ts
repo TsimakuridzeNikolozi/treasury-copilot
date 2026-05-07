@@ -195,11 +195,11 @@ export async function transitionAction(
 //   separate from human-approved spend (a human's $50k action shouldn't poison
 //   the next 24h of auto-approvals).
 // - `failed` is excluded on the assumption that a failed execution moved no
-//   funds. Now that execution can fail (executor + signer landed), this
-//   exclusion is load-bearing rather than dormant: an auto-approved deposit
-//   whose stub fails frees its slot in the 24h cap, which is the desired
+//   funds. Now that execution can really fail (real signer + Kamino path),
+//   this exclusion is load-bearing: an auto-approved deposit whose signer
+//   call fails frees its slot in the 24h cap, which matches the desired
 //   semantic. Partial execution would still silently free a slot — revisit
-//   when a real signer can land a half-broadcast tx.
+//   if a future protocol path can land a half-broadcast tx.
 //
 // Caller is responsible for handling the read-then-write race: two parallel
 // proposals can both observe the same total and both pass the cap. Tolerated
@@ -287,6 +287,43 @@ export async function findPendingForTelegram(db: Db, limit = 25): Promise<Propos
     .where(and(eq(proposedActions.status, 'pending'), isNull(proposedActions.telegramMessageId)))
     .orderBy(asc(proposedActions.createdAt))
     .limit(limit);
+}
+
+// Compare-and-set: only writes the signature when the row is `executing` and
+// has no signature yet. Caller is the signer between tx.sign() and
+// sendRawTransaction(). The status guard means the executor's atomic claim
+// must have already succeeded; the IS NULL guard means a duplicate persist
+// (e.g., a retry inside the same tick) can't overwrite. Mirrors the idempotency
+// shape of setTelegramMessageId.
+export async function setActionTxSignature(
+  db: Db,
+  actionId: string,
+  txSignature: string,
+): Promise<boolean> {
+  const updated = await db
+    .update(proposedActions)
+    .set({ txSignature })
+    .where(
+      and(
+        eq(proposedActions.id, actionId),
+        eq(proposedActions.status, 'executing'),
+        isNull(proposedActions.txSignature),
+      ),
+    )
+    .returning({ id: proposedActions.id });
+  return updated.length > 0;
+}
+
+// Used by the executor's boot-time recovery loop. Returns rows that were
+// claimed but never reached a terminal state — either because the worker
+// crashed between sign and submit (txSignature populated, no confirmation
+// landed) or between claim and sign (no signature yet).
+export async function findInFlightExecutions(db: Db): Promise<ProposedActionRow[]> {
+  return db
+    .select()
+    .from(proposedActions)
+    .where(eq(proposedActions.status, 'executing'))
+    .orderBy(asc(proposedActions.createdAt));
 }
 
 // Compare-and-set: only stamps telegramMessageId when it's still NULL, so a

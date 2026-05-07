@@ -1,22 +1,33 @@
 import {
+  IllegalTransitionError,
   TransitionConflictError,
   findApprovedForExecution,
+  findInFlightExecutions,
   getApprovalAttribution,
+  setActionTxSignature,
   transitionAction,
 } from '@tc/db';
-import { stubSigner } from '@tc/signer';
+import { createSigner } from '@tc/signer';
+import type { ExecuteResult } from '@tc/types';
 import { editApprovalCardWithExecution } from './bot';
 import { db } from './db';
 import { env } from './env';
+
+const signer = createSigner({
+  rpcUrl: env.SOLANA_RPC_URL,
+  keypairPath: env.SOLANA_KEYPAIR_PATH,
+  commitment: env.SIGNER_COMMITMENT,
+  confirmTimeoutMs: env.SIGNER_CONFIRM_TIMEOUT_MS,
+});
 
 let timer: NodeJS.Timeout | null = null;
 let inFlight = false;
 
 // One tick: find approved rows, claim each atomically (approved → executing),
-// run the signer, transition to executed/failed, edit the Telegram card.
-// Mirrors the structure of poller.ts (re-entrancy guard, per-action try/catch
-// so one bad row doesn't kill the loop). Per-action errors stay logged; outer
-// catch handles DB failures.
+// run the signer, transition to executed/failed (or leave executing on
+// `pending`), edit the Telegram card. Mirrors the structure of poller.ts
+// (re-entrancy guard, per-action try/catch so one bad row doesn't kill the
+// loop). Per-action errors stay logged; outer catch handles DB failures.
 async function tick(): Promise<void> {
   if (inFlight) return;
   inFlight = true;
@@ -25,9 +36,13 @@ async function tick(): Promise<void> {
     for (const row of approved) {
       // Tracks whether we successfully flipped this row to `executing`. Used
       // in the outer catch to decide whether to drive an orphaned row to a
-      // terminal `failed` state (only safe if we know the row is `executing`,
-      // not still `approved` — an unclaimed row can be retried next tick).
+      // terminal state (only safe if we know the row is `executing`, not
+      // still `approved` — an unclaimed row can be retried next tick).
       let claimedForExecution = false;
+      // Hoisted so the outer catch can branch on it: a successful signer
+      // result whose post-success bookkeeping crashes must not be downgraded
+      // to `failed` — the tx is already on-chain.
+      let result: ExecuteResult | undefined;
       try {
         // Atomic claim: only one replica wins the approved → executing flip.
         // Without this, two workers could both call the signer for the same
@@ -47,6 +62,7 @@ async function tick(): Promise<void> {
           throw claimErr;
         }
         claimedForExecution = true;
+        console.log(`[executor] action ${row.id} claimed, submitting`);
 
         // Authorization came from either a policy `allow` decision (auto-
         // approval at insert time) or a Telegram allowlisted approver
@@ -57,7 +73,34 @@ async function tick(): Promise<void> {
         // `allow`-shaped decision here from `payload` to satisfy the Signer's
         // type contract.
         const decision = { kind: 'allow' as const, action: claimed.payload };
-        const result = await stubSigner.executeApproved(decision);
+        result = await signer.executeApproved(decision, {
+          onSignature: async (sig) => {
+            const won = await setActionTxSignature(db, row.id, sig);
+            if (!won) {
+              // Lost a CAS race — another writer beat us, or the row left
+              // `executing` between claim and persist. Throw so the signer
+              // returns ExecuteResult.failure without broadcasting.
+              throw new Error(`signature persistence lost the race for ${row.id}`);
+            }
+          },
+        });
+
+        if (result.kind === 'pending') {
+          // Tx broadcast but cluster status unsettled; do NOT terminally
+          // transition. Leave the row in `executing` for the next boot's
+          // recovery sweep to finish. Force-failing here would risk a
+          // double-execute if the tx eventually lands.
+          console.warn(
+            `[executor] action ${row.id} pending: ${result.reason} ${result.txSignature}`,
+          );
+          continue;
+        }
+
+        if (result.kind === 'success') {
+          console.log(`[executor] action ${row.id} executed ${result.txSignature}`);
+        } else {
+          console.warn(`[executor] action ${row.id} failed: ${result.error}`);
+        }
 
         const updated = await transitionAction(db, {
           id: row.id,
@@ -80,11 +123,34 @@ async function tick(): Promise<void> {
         }
       } catch (err) {
         console.error(`[executor] failed to execute action ${row.id}:`, err);
-        if (claimedForExecution) {
-          // Row was claimed (status='executing') but never reached executed/
-          // failed. Drive it to a terminal `failed` so it isn't orphaned. If
-          // the final transitionAction actually landed before we threw, the
-          // CAS rejects this with TransitionConflictError — swallow that.
+        if (!claimedForExecution) continue;
+
+        if (result?.kind === 'success') {
+          // Signer succeeded on-chain; only the bookkeeping write failed.
+          // Retrying the executed-transition is the only correct move —
+          // flipping to `failed` here would lie about a confirmed tx. If
+          // the retry also fails, leave the row in `executing` and let
+          // boot recovery's signature lookup finish it.
+          try {
+            await transitionAction(db, {
+              id: row.id,
+              from: 'executing',
+              to: 'executed',
+              actor: 'signer',
+              payload: { txSignature: result.txSignature },
+            });
+          } catch (retryErr) {
+            if (!(retryErr instanceof TransitionConflictError)) {
+              console.error(
+                `[executor] action ${row.id} succeeded on-chain (${result.txSignature}) but bookkeeping retry failed:`,
+                retryErr,
+              );
+            }
+          }
+        } else {
+          // No success result — drive to failed. If the final transitionAction
+          // actually landed before we threw, the CAS rejects this with
+          // TransitionConflictError; swallow that.
           try {
             const message = err instanceof Error ? err.message : String(err);
             await transitionAction(db, {
@@ -109,6 +175,86 @@ async function tick(): Promise<void> {
   }
 }
 
+// Resolve any rows left in `executing` by a previous worker process.
+// Two sub-cases:
+// - tx_signature populated: signer signed and persisted, but the worker
+//   crashed before observing confirmation. Re-confirm via signature lookup
+//   (no re-submit). Move to executed/failed only on a definitive cluster
+//   answer; rows whose status is `processed` or unknown stay in `executing`
+//   for the next boot's sweep — terminal-failing them risks a double-execute
+//   if the tx is still landing.
+// - tx_signature NULL: worker crashed between claim and sign. Conservative
+//   path: mark failed; user re-proposes. Backward `executing → approved`
+//   would also work but isn't in LEGAL_TRANSITIONS by design.
+//
+// Single-process assumption: this scans every row in `executing`, including
+// rows a peer worker is currently mid-execution on. Treasury Copilot runs
+// single-replica today (Telegram bot needs a long-lived process; horizontal
+// scale-out would require a leader election anyway). If multi-replica is
+// ever added, gate this on a staleness threshold (e.g., ignore rows touched
+// in the last 60s) so a rebooting worker doesn't race a live one.
+async function recoverInFlight(): Promise<void> {
+  const stuck = await findInFlightExecutions(db);
+  if (stuck.length === 0) return;
+  console.log(`[executor] recovering ${stuck.length} in-flight row(s)`);
+
+  for (const row of stuck) {
+    try {
+      if (!row.txSignature) {
+        await transitionAction(db, {
+          id: row.id,
+          from: 'executing',
+          to: 'failed',
+          actor: 'signer',
+          payload: { error: 'recovery: claimed but never signed' },
+        });
+        console.warn(`[executor] action ${row.id} recovered → failed (never signed)`);
+        continue;
+      }
+
+      const sig = row.txSignature;
+      const status = await signer.checkSignatureStatus(sig);
+      if (status.kind === 'reverted') {
+        await transitionAction(db, {
+          id: row.id,
+          from: 'executing',
+          to: 'failed',
+          actor: 'signer',
+          payload: {
+            error: `recovery: tx reverted: ${JSON.stringify(status.err)}`,
+            txSignature: sig,
+          },
+        });
+        console.warn(`[executor] action ${row.id} recovered → failed (reverted) ${sig}`);
+      } else if (status.kind === 'confirmed') {
+        await transitionAction(db, {
+          id: row.id,
+          from: 'executing',
+          to: 'executed',
+          actor: 'signer',
+          payload: { txSignature: sig },
+        });
+        console.log(`[executor] action ${row.id} recovered → executed ${sig}`);
+      } else {
+        // pending: cluster knows the tx but hasn't confirmed it, OR the RPC
+        // hasn't indexed it yet. Leave in `executing` for the next sweep —
+        // marking failed here is the false negative that could cause a
+        // double-execute if the tx eventually lands.
+        console.log(
+          `[executor] action ${row.id} still pending in recovery; leaving executing ${sig}`,
+        );
+      }
+    } catch (err) {
+      // A peer may have resolved this row between our select and our update.
+      // Swallow that; surface anything else.
+      if (err instanceof TransitionConflictError || err instanceof IllegalTransitionError) {
+        continue;
+      }
+      console.error(`[executor] recovery failed for ${row.id}:`, err);
+    }
+  }
+}
+
 export function startExecutor(): () => void {
   if (timer) {
     console.log('[executor] already running, ignoring duplicate start');
@@ -120,9 +266,14 @@ export function startExecutor(): () => void {
     };
   }
   console.log(`[executor] starting (interval=${env.EXECUTOR_POLL_INTERVAL_MS}ms)`);
-  // Immediate tick so a freshly-approved action doesn't wait one full interval.
-  void tick();
-  timer = setInterval(() => void tick(), env.EXECUTOR_POLL_INTERVAL_MS);
+  // Recover first, then start the normal poll loop. If recovery fails, log
+  // and continue — a stuck row won't block fresh actions.
+  void recoverInFlight()
+    .catch((err) => console.error('[executor] recovery loop crashed:', err))
+    .finally(() => {
+      void tick();
+      timer = setInterval(() => void tick(), env.EXECUTOR_POLL_INTERVAL_MS);
+    });
   return () => {
     if (timer) {
       clearInterval(timer);

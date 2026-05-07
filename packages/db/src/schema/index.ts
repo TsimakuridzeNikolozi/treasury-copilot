@@ -1,5 +1,5 @@
 import type { PolicyDecision, ProposedAction, Venue } from '@tc/types';
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 import {
   index,
   integer,
@@ -9,6 +9,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
 
@@ -35,6 +36,9 @@ export const proposedActions = pgTable(
     proposedBy: text('proposed_by').notNull(),
     policyDecision: jsonb('policy_decision').$type<PolicyDecision>(),
     telegramMessageId: integer('telegram_message_id'),
+    // Persisted between sign and submit so a crash mid-broadcast can be
+    // recovered by re-confirming the signature rather than re-submitting.
+    txSignature: text('tx_signature'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     executedAt: timestamp('executed_at', { withTimezone: true }),
   },
@@ -42,6 +46,13 @@ export const proposedActions = pgTable(
     index('proposed_actions_status_idx').on(t.status),
     index('proposed_actions_created_at_idx').on(t.createdAt),
     index('proposed_actions_status_created_at_idx').on(t.status, t.createdAt),
+    // Defense in depth: the IS NULL CAS in setActionTxSignature already
+    // prevents per-row reuse, but a unique partial index catches cross-row
+    // collisions if the signer ever miscomputed a signature. Partial because
+    // most rows have NULL tx_signature (pre-execution or pre-2B history).
+    uniqueIndex('proposed_actions_tx_signature_uq')
+      .on(t.txSignature)
+      .where(sql`${t.txSignature} IS NOT NULL`),
   ],
 );
 

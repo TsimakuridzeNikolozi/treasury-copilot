@@ -1,0 +1,1 @@
+ALTER TABLE "proposed_actions" ADD COLUMN "tx_signature" text;

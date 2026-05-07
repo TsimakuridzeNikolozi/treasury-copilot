@@ -50,16 +50,19 @@ export const PolicyDecisionSchema = z.discriminatedUnion('kind', [
 ]);
 export type PolicyDecision = z.infer<typeof PolicyDecisionSchema>;
 
-// Outcome of `Signer.executeApproved`. The audit log payload for the
-// `approved → executed` / `approved → failed` transition stores the success's
-// txSignature or the failure's error string, keeping execution metadata in the
-// unstructured audit table.
-// TODO(phase-1): Defer schema/storage work for Signer.executeApproved audit
-// payload — store txSignature or error string until a real signer pins down
-// the column shape.
+// Outcome of `Signer.executeApproved`.
+//
+// `pending` is the ambiguous case: the tx was broadcast (so we have a
+// signature) but the cluster's view is unsettled — either the confirmation
+// race timed out and a follow-up status check returned `processed` / null,
+// or for some other reason we can't yet say success or failure. The caller
+// must NOT transition the row to a terminal state on `pending`; leave it in
+// `executing` and let the next boot's recovery sweep finish it. Returning
+// `failure` here would risk a double-execute if the tx eventually lands.
 export const ExecuteResultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('success'), txSignature: z.string() }),
   z.object({ kind: z.literal('failure'), error: z.string() }),
+  z.object({ kind: z.literal('pending'), txSignature: z.string(), reason: z.string() }),
 ]);
 export type ExecuteResult = z.infer<typeof ExecuteResultSchema>;
 

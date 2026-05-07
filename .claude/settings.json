@@ -1,6 +1,18 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
-    "deny": ["Read(**/.env)", "Read(**/.env.local)", "Read(**/.env.*.local)"]
+    "deny": [
+      "Read(**/.env)",
+      "Read(**/.env.local)",
+      "Read(**/.env.*.local)",
+      "Read(./keys/**)",
+      "Read(**/*.keypair.json)",
+      "Bash(cat ./keys/**)",
+      "Bash(cat **/*.keypair.json)",
+      "Bash(xxd ./keys/**)",
+      "Bash(xxd **/*.keypair.json)",
+      "Bash(head ./keys/**)",
+      "Bash(tail ./keys/**)"
+    ]
   }
 }

@@ -23,11 +23,11 @@ const schema = z.object({
   ACTION_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
   EXECUTOR_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(3000),
 
-  // TODO(phase-1): Stub-signer-only knob: how often the random failure path fires. Tests
-  // pin this to 0 for deterministic success-path runs; demos leave the
-  // default to exercise the failure UI organically. Goes away when a real
-  // signer replaces the stub.
-  STUB_SIGNER_FAILURE_RATE: z.coerce.number().min(0).max(1).default(0.1),
+  // Signer config (phase-1, step 2A). Filesystem keypair in Solana CLI format.
+  // Step 2B will swap this for Privy/Turnkey by replacing loadTreasuryKeypair.
+  SOLANA_KEYPAIR_PATH: z.string().min(1, 'SOLANA_KEYPAIR_PATH is required'),
+  SIGNER_COMMITMENT: z.enum(['processed', 'confirmed', 'finalized']).default('confirmed'),
+  SIGNER_CONFIRM_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
 });
 
 const parsed = schema.safeParse(process.env);

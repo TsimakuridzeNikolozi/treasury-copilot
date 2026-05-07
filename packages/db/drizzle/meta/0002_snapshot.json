@@ -1,6 +1,6 @@
 {
-  "id": "01f94377-079f-4261-ae46-00b17c36cadc",
-  "prevId": "d061fc70-4851-4ee0-a42d-efdfc93b70b1",
+  "id": "772c9faa-4aff-48bf-85db-46656ed20ea4",
+  "prevId": "01f94377-079f-4261-ae46-00b17c36cadc",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -219,6 +219,12 @@
         "telegram_message_id": {
           "name": "telegram_message_id",
           "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tx_signature": {
+          "name": "tx_signature",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
