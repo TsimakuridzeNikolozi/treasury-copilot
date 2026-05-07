@@ -69,7 +69,7 @@ The orchestration helper `proposeAction(db, action, ctx)` lives in `@tc/agent-to
 apps/web      → env, types, db, policy, agent-tools, protocols
 apps/worker   → env, types, db, policy, signer
 agent-tools   → types, policy, signer, protocols, db
-signer        → types, policy
+signer        → types, policy, protocols
 policy        → types
 protocols     → types
 db            → types

@@ -16,8 +16,11 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
+    "@solana/web3.js": "^1.95.0",
     "@tc/policy": "workspace:*",
-    "@tc/types": "workspace:*"
+    "@tc/protocols": "workspace:*",
+    "@tc/types": "workspace:*",
+    "bs58": "^6.0.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

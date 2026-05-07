@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "proposed_actions_tx_signature_uq" ON "proposed_actions" USING btree ("tx_signature") WHERE "proposed_actions"."tx_signature" IS NOT NULL;
