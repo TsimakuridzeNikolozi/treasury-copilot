@@ -22,7 +22,7 @@ export const actionStatus = pgEnum('action_status', [
   'failed',
 ]);
 
-const VENUE_VALUES = ['kamino', 'drift', 'marginfi'] as const satisfies readonly Venue[];
+const VENUE_VALUES = ['kamino', 'save', 'drift', 'marginfi'] as const satisfies readonly Venue[];
 const DECISION_VALUES = ['approve', 'deny'] as const;
 
 export const proposedActions = pgTable(

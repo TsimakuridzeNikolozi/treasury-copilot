@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./kamino": "./src/kamino.ts",
+    "./save": "./src/save.ts",
     "./drift": "./src/drift.ts",
     "./marginfi": "./src/marginfi.ts"
   },
@@ -21,6 +22,7 @@
   "dependencies": {
     "@kamino-finance/klend-sdk": "^5.15.4",
     "@solana/web3.js": "^1.95.0",
+    "@solendprotocol/solend-sdk": "^0.14.27",
     "@tc/types": "workspace:*",
     "bn.js": "^5.2.1",
     "decimal.js": "^10.4.3"

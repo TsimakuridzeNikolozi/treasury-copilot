@@ -4,15 +4,11 @@ import {
   KaminoMarket,
   VanillaObligation,
 } from '@kamino-finance/klend-sdk';
-import {
-  type Commitment,
-  type Connection,
-  PublicKey,
-  type TransactionInstruction,
-} from '@solana/web3.js';
+import { type Commitment, type Connection, PublicKey } from '@solana/web3.js';
 import type { DepositAction, WithdrawAction } from '@tc/types';
 import BN from 'bn.js';
 import Decimal from 'decimal.js';
+import type { BuiltInstructions, ProtocolCtx } from './types';
 
 // Kamino Main Market on mainnet (USDC, SOL, JitoSOL, …). Pinned here so the
 // signer doesn't reach into SDK internals or the Kamino CDN at runtime.
@@ -35,10 +31,9 @@ export const USDC_DECIMALS = 6;
 // Real slot time fluctuates ~380–450ms; this is a reasonable midpoint.
 const RECENT_SLOT_DURATION_MS = 450;
 
-export interface KaminoCtx {
-  connection: Connection;
-  owner: PublicKey;
-}
+// Alias maintained for backwards compatibility within this file.
+// Other protocol builders should import ProtocolCtx from './types' directly.
+export type KaminoCtx = ProtocolCtx;
 
 // Wrap a Connection so any `getSlot()` the Kamino SDK makes uses `finalized`
 // commitment. The SDK bakes the result into `CreateLookupTable.recentSlot`
@@ -51,7 +46,10 @@ export interface KaminoCtx {
 // Object.create gives us a wrapper that inherits all Connection methods via
 // prototype chain — no need to re-implement the surface — and overriding
 // `getSlot` here shadows the inherited method only for that one call.
-function withFinalizedSlot(connection: Connection): Connection {
+//
+// Exported because Save's setup ixs may also include a CreateLookupTable
+// with the same stale-slot risk; the wrapping is venue-agnostic.
+export function withFinalizedSlot(connection: Connection): Connection {
   const wrapped = Object.create(connection) as Connection;
   wrapped.getSlot = (commitmentOrConfig?: Commitment | { commitment?: Commitment }) => {
     const finalized: Commitment = 'finalized';
@@ -75,7 +73,7 @@ function withFinalizedSlot(connection: Connection): Connection {
 export async function buildKaminoDepositInstructions(
   action: DepositAction,
   ctx: KaminoCtx,
-): Promise<TransactionInstruction[]> {
+): Promise<BuiltInstructions> {
   const connection = withFinalizedSlot(ctx.connection);
 
   // TODO: KaminoMarket.load fetches market + reserves on every invocation
@@ -127,12 +125,15 @@ export async function buildKaminoDepositInstructions(
     /* requestElevationGroup */ false,
   );
 
-  return [
-    ...kaminoAction.computeBudgetIxs,
-    ...kaminoAction.setupIxs,
-    ...kaminoAction.lendingIxs,
-    ...kaminoAction.cleanupIxs,
-  ];
+  return {
+    instructions: [
+      ...kaminoAction.computeBudgetIxs,
+      ...kaminoAction.setupIxs,
+      ...kaminoAction.lendingIxs,
+      ...kaminoAction.cleanupIxs,
+    ],
+    extraSigners: [],
+  };
 }
 
 // Mirror of buildKaminoDepositInstructions for withdrawals from the same
@@ -147,7 +148,7 @@ export async function buildKaminoDepositInstructions(
 export async function buildKaminoWithdrawInstructions(
   action: WithdrawAction,
   ctx: KaminoCtx,
-): Promise<TransactionInstruction[]> {
+): Promise<BuiltInstructions> {
   const connection = withFinalizedSlot(ctx.connection);
 
   const market = await KaminoMarket.load(
@@ -188,10 +189,13 @@ export async function buildKaminoWithdrawInstructions(
     /* requestElevationGroup */ false,
   );
 
-  return [
-    ...kaminoAction.computeBudgetIxs,
-    ...kaminoAction.setupIxs,
-    ...kaminoAction.lendingIxs,
-    ...kaminoAction.cleanupIxs,
-  ];
+  return {
+    instructions: [
+      ...kaminoAction.computeBudgetIxs,
+      ...kaminoAction.setupIxs,
+      ...kaminoAction.lendingIxs,
+      ...kaminoAction.cleanupIxs,
+    ],
+    extraSigners: [],
+  };
 }

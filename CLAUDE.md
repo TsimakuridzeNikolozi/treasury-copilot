@@ -4,9 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Product
 
-Treasury Copilot is a chat-first AI agent that manages a startup or DAO's USDC across Solana yield venues (Kamino, Drift Earn, Marginfi) under hard policy guardrails, with human-in-the-loop approval for moves above a threshold.
+Treasury Copilot is a chat-first AI agent that manages a startup or DAO's USDC across Solana yield venues (Kamino, Save, Drift Earn, Marginfi) under hard policy guardrails, with human-in-the-loop approval for moves above a threshold.
 
-The repo is currently a **scaffold only** — no business logic, no real integrations. Look for `// TODO(phase-1):` markers for the work that's intentionally deferred.
+Venue coverage today: deposit + withdraw are wired end-to-end on **Kamino** (Main Market, USDC reserve) and **Save** (Main Pool, USDC reserve). Drift / Marginfi / rebalance still fall through to the smoke self-transfer.
+
+Phase-1 markers: look for `// TODO(2E–2F):` and similar pointers for work that's intentionally deferred.
 
 ## Common commands
 
@@ -120,7 +122,7 @@ Biome only. **Do not add ESLint or Prettier.** Run `pnpm exec biome check --writ
 These are first-feature work, not setup. When asked to "add X", check this list — if it's here, the answer is "yes, that's phase-1 work, not a config tweak":
 
 - Auth (Privy / Turnkey)
-- Solana RPC client and protocol SDKs (Kamino, Drift, Marginfi) — `packages/protocols` is stubs only
+- Protocol SDK coverage in `packages/protocols`: Kamino and Save are wired end-to-end (deposit + withdraw); Drift and Marginfi builders are still stubs
 - Telegram bot client (grammy) in `apps/worker/src/bot.ts`
 - Signer implementation (the `@tc/signer.executeApproved` interface exists; no provider yet)
 - A `policies` table — phase-1 rules live in `packages/policy/src/index.ts` (`DEFAULT_POLICY`)

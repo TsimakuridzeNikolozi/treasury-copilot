@@ -14,7 +14,7 @@ export const DEFAULT_POLICY: Policy = {
   requireApprovalAboveUsdc: '1000',
   maxSingleActionUsdc: '10000',
   maxAutoApprovedUsdcPer24h: '5000',
-  allowedVenues: ['kamino', 'drift', 'marginfi'],
+  allowedVenues: ['kamino', 'save', 'drift', 'marginfi'],
 };
 
 export interface EvaluateContext {
