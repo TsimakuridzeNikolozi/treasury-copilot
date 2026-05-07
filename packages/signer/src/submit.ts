@@ -12,6 +12,13 @@ export interface SignSubmitConfirmOpts {
   connection: Connection;
   keypair: Keypair;
   instructions: TransactionInstruction[];
+  // Ephemeral signers required by individual instructions (e.g. Pyth pull-
+  // oracle keypairs from Save's setup ixs, fresh-account keypairs that some
+  // protocols require for first-deposit init). Always includes `keypair` as
+  // the fee payer; these are added via tx.sign(keypair, ...extraSigners).
+  // signatures[0] remains the fee-payer signature, so onSignature/recovery
+  // semantics are unchanged.
+  extraSigners?: Keypair[];
   commitment: Commitment;
   timeoutMs: number;
   // Called after tx.sign() but before sendRawTransaction(). Use this to
@@ -58,14 +65,13 @@ async function resolvePostBroadcastOutcome(
 // hangs indefinitely on a stalled RPC; without the race a worker could sit on
 // a `pending` row forever.
 //
-// Single-signer assumption: tx.sign(keypair) signs only with the fee payer.
-// All current dispatch paths (Kamino vanilla deposit, smoke self-transfer)
-// satisfy this. If a future protocol path requires extra signers (e.g.,
-// initializing an obligation with a fresh keypair instead of a PDA),
-// sendRawTransaction will reject loudly — so this isn't silent breakage,
-// but the call site will need to switch to partialSign + add the extras.
+// Multi-signer: `keypair` is always the fee payer; `extraSigners` are added
+// for ix-level requirements (Pyth oracle pull keypairs, fresh-account init
+// keypairs, etc.). signatures[0] is still the fee-payer signature, so the
+// onSignature hook and recovery loop are unchanged.
 export async function signSubmitConfirm(opts: SignSubmitConfirmOpts): Promise<ExecuteResult> {
-  const { connection, keypair, instructions, commitment, timeoutMs, onSignature } = opts;
+  const { connection, keypair, instructions, extraSigners, commitment, timeoutMs, onSignature } =
+    opts;
 
   let timeoutHandle: NodeJS.Timeout | undefined;
   // Tracks whether sendRawTransaction returned successfully. The catch below
@@ -80,7 +86,7 @@ export async function signSubmitConfirm(opts: SignSubmitConfirmOpts): Promise<Ex
       feePayer: keypair.publicKey,
     });
     tx.add(...instructions);
-    tx.sign(keypair);
+    tx.sign(keypair, ...(extraSigners ?? []));
 
     // Solana signatures are deterministic from the signed bytes, so the
     // base58-encoded fee-payer signature here matches what the cluster will

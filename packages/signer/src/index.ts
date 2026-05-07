@@ -1,6 +1,7 @@
 import {
   type Commitment,
   Connection,
+  type Keypair,
   SystemProgram,
   type TransactionInstruction,
 } from '@solana/web3.js';
@@ -9,6 +10,12 @@ import {
   buildKaminoDepositInstructions,
   buildKaminoWithdrawInstructions,
 } from '@tc/protocols/kamino';
+import {
+  SAVE_PROGRAM_ID_BASE58,
+  SAVE_WRAPPER_PROGRAM_ID_BASE58,
+  buildSaveDepositInstructions,
+  buildSaveWithdrawInstructions,
+} from '@tc/protocols/save';
 import type { ExecuteResult, PolicyDecision } from '@tc/types';
 import { signSubmitConfirm } from './submit';
 import { loadTreasuryKeypair } from './wallet';
@@ -55,13 +62,20 @@ export interface SignerConfig {
 
 // Per-action program allowlists. The signer holds the keys, so it has final
 // say over which programs may be CPI'd. Stricter than a global allowlist: if
-// the Kamino SDK starts touching new programs, the deposit path catches it
+// a protocol SDK starts touching new programs, the affected path catches it
 // without widening trust for unrelated paths (e.g. the smoke transfer).
 const SYSTEM_PROGRAM = SystemProgram.programId.toBase58();
 const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111';
 const ATA_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
 const SPL_TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const ADDRESS_LOOKUP_TABLE_PROGRAM = 'AddressLookupTab1e1111111111111111111111111';
+// Pyth pull-oracle infra (Save's setup ixs may inline a price update).
+const PYTH_RECEIVER_PROGRAM = 'rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ';
+const WORMHOLE_CORE_PROGRAM = 'HDwcJBJXjL9FpJ7UBsYBtaDjsBUhuLCUYoz3zr8SWWaQ';
+// Switchboard On-Demand (Save's reserves with non-null switchboardOracle).
+// USDC main-pool's switchboardOracle is the null sentinel today, but
+// keeping the program in the allowlist avoids a regression if Save adds it.
+const SWITCHBOARD_ONDEMAND_PROGRAM = 'SBondMDrcV3K4kxZR1HNVT7osZxAHVHgYXL5Ze1oMUv';
 
 const KAMINO_DEPOSIT_ALLOWED_PROGRAMS = new Set<string>([
   KLEND_PROGRAM_ID_BASE58,
@@ -84,6 +98,39 @@ const KAMINO_WITHDRAW_ALLOWED_PROGRAMS = new Set<string>([
   ATA_PROGRAM,
   SPL_TOKEN_PROGRAM,
   ADDRESS_LOOKUP_TABLE_PROGRAM,
+]);
+
+// Save (Solend rebrand) deposit. Save's lending program handles ATA setup,
+// obligation init/refresh, and the deposit itself. The optional inline
+// oracle ixs come from Pyth pull-receiver / Wormhole / Switchboard. The
+// wrapper program is CPI'd by the max-deposit instruction variant; not our
+// path today (we always pass an explicit amount) but allowlisted for
+// symmetry with the withdraw path.
+const SAVE_DEPOSIT_ALLOWED_PROGRAMS = new Set<string>([
+  SAVE_PROGRAM_ID_BASE58,
+  SAVE_WRAPPER_PROGRAM_ID_BASE58,
+  SYSTEM_PROGRAM,
+  COMPUTE_BUDGET_PROGRAM,
+  ATA_PROGRAM,
+  SPL_TOKEN_PROGRAM,
+  PYTH_RECEIVER_PROGRAM,
+  WORMHOLE_CORE_PROGRAM,
+  SWITCHBOARD_ONDEMAND_PROGRAM,
+]);
+
+// Save withdraw routes through the wrapper program (`withdrawExact`), which
+// CPIs into the lending program. Plus the same supporting programs as
+// deposit (oracle pulls, ATA, etc.).
+const SAVE_WITHDRAW_ALLOWED_PROGRAMS = new Set<string>([
+  SAVE_PROGRAM_ID_BASE58,
+  SAVE_WRAPPER_PROGRAM_ID_BASE58,
+  SYSTEM_PROGRAM,
+  COMPUTE_BUDGET_PROGRAM,
+  ATA_PROGRAM,
+  SPL_TOKEN_PROGRAM,
+  PYTH_RECEIVER_PROGRAM,
+  WORMHOLE_CORE_PROGRAM,
+  SWITCHBOARD_ONDEMAND_PROGRAM,
 ]);
 
 const SMOKE_TRANSFER_ALLOWED_PROGRAMS = new Set<string>([SYSTEM_PROGRAM]);
@@ -144,21 +191,31 @@ export function createSigner(config: SignerConfig): Signer {
       }
 
       let instructions: TransactionInstruction[];
+      let extraSigners: Keypair[];
       let allowedPrograms: Set<string>;
+      const ctx = { connection, owner: keypair.publicKey };
       if (action.kind === 'deposit' && action.venue === 'kamino') {
-        instructions = await buildKaminoDepositInstructions(action, {
-          connection,
-          owner: keypair.publicKey,
-        });
+        const built = await buildKaminoDepositInstructions(action, ctx);
+        instructions = built.instructions;
+        extraSigners = built.extraSigners;
         allowedPrograms = KAMINO_DEPOSIT_ALLOWED_PROGRAMS;
       } else if (action.kind === 'withdraw' && action.venue === 'kamino') {
-        instructions = await buildKaminoWithdrawInstructions(action, {
-          connection,
-          owner: keypair.publicKey,
-        });
+        const built = await buildKaminoWithdrawInstructions(action, ctx);
+        instructions = built.instructions;
+        extraSigners = built.extraSigners;
         allowedPrograms = KAMINO_WITHDRAW_ALLOWED_PROGRAMS;
+      } else if (action.kind === 'deposit' && action.venue === 'save') {
+        const built = await buildSaveDepositInstructions(action, ctx);
+        instructions = built.instructions;
+        extraSigners = built.extraSigners;
+        allowedPrograms = SAVE_DEPOSIT_ALLOWED_PROGRAMS;
+      } else if (action.kind === 'withdraw' && action.venue === 'save') {
+        const built = await buildSaveWithdrawInstructions(action, ctx);
+        instructions = built.instructions;
+        extraSigners = built.extraSigners;
+        allowedPrograms = SAVE_WITHDRAW_ALLOWED_PROGRAMS;
       } else {
-        // TODO(2D–2F): Drift, Marginfi, rebalance.
+        // TODO(2E–2F): Drift, Marginfi, rebalance.
         instructions = [
           SystemProgram.transfer({
             fromPubkey: keypair.publicKey,
@@ -166,6 +223,7 @@ export function createSigner(config: SignerConfig): Signer {
             lamports: 0,
           }),
         ];
+        extraSigners = [];
         allowedPrograms = SMOKE_TRANSFER_ALLOWED_PROGRAMS;
       }
 
@@ -188,6 +246,7 @@ export function createSigner(config: SignerConfig): Signer {
         connection,
         keypair,
         instructions,
+        extraSigners,
         commitment: config.commitment,
         timeoutMs: config.confirmTimeoutMs,
         onSignature: opts.onSignature,

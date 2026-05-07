@@ -4,9 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Product
 
-Treasury Copilot is a chat-first AI agent that manages a startup or DAO's USDC across Solana yield venues (Kamino, Drift Earn, Marginfi) under hard policy guardrails, with human-in-the-loop approval for moves above a threshold.
+Treasury Copilot is a chat-first AI agent that manages a startup or DAO's USDC across Solana yield venues (Kamino, Save, Drift Earn, Marginfi) under hard policy guardrails, with human-in-the-loop approval for moves above a threshold.
 
-The repo is currently a **scaffold only** — no business logic, no real integrations. Look for `// TODO(phase-1):` markers for the work that's intentionally deferred.
+Venue coverage today: deposit + withdraw are wired end-to-end on **Kamino** (Main Market, USDC reserve) and **Save** (Main Pool, USDC reserve). Drift / Marginfi / rebalance still fall through to the smoke self-transfer.
+
+Phase-1 markers: look for `// TODO(2E–2F):` and similar pointers for work that's intentionally deferred.
 
 ## Common commands
 
