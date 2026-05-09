@@ -3,10 +3,10 @@ import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { TEST_DATABASE_URL } from '../test/url';
 import * as schema from './schema';
 
-const DATABASE_URL =
-  process.env.DATABASE_URL ?? 'postgresql://copilot:copilot@localhost:5432/treasury';
+const DATABASE_URL = process.env.DATABASE_URL ?? TEST_DATABASE_URL;
 
 // Set SKIP_DB_TESTS=1 to skip integration tests in environments without Postgres.
 const SKIP = process.env.SKIP_DB_TESTS === '1';

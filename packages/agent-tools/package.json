@@ -29,6 +29,8 @@
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@tc/tsconfig": "workspace:*",
+    "drizzle-orm": "^0.38.2",
+    "postgres": "^3.4.5",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   }
