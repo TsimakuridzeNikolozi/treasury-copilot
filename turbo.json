@@ -24,6 +24,10 @@
       "dependsOn": ["transit"],
       "outputs": ["coverage/**"]
     },
+    "@tc/agent-tools#test": {
+      "dependsOn": ["transit", "@tc/db#test"],
+      "outputs": ["coverage/**"]
+    },
     "transit": {
       "dependsOn": ["^transit"]
     },

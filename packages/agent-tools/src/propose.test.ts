@@ -1,12 +1,12 @@
 import { type Db, createDb, schema } from '@tc/db';
+import { TEST_DATABASE_URL } from '@tc/db/test/url';
 import { DEFAULT_POLICY, type Policy } from '@tc/policy';
 import type { ProposedAction, Venue } from '@tc/types';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import type { BalanceReader } from './balance';
 import { type ProposeContext, proposeAction } from './propose';
 
-const DATABASE_URL =
-  process.env.DATABASE_URL ?? 'postgresql://copilot:copilot@localhost:5432/treasury';
+const DATABASE_URL = process.env.DATABASE_URL ?? TEST_DATABASE_URL;
 
 const SKIP = process.env.SKIP_DB_TESTS === '1';
 const db: Db = createDb(DATABASE_URL);
