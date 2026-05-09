@@ -33,6 +33,11 @@ export const RebalanceActionSchema = z.object({
   fromVenue: VenueSchema,
   toVenue: VenueSchema,
   amountUsdc: UsdcAmountSchema,
+  // The wallet that holds the position. Both legs (withdraw fromVenue,
+  // deposit toVenue) source/destination this address. Mirrors the
+  // sourceWallet/destinationWallet pattern on deposit/withdraw — user-provided,
+  // signer-verified per leg.
+  wallet: SolanaAddressSchema,
 });
 export type RebalanceAction = z.infer<typeof RebalanceActionSchema>;
 

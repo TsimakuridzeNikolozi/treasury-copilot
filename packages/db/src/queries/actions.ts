@@ -314,6 +314,33 @@ export async function setActionTxSignature(
   return updated.length > 0;
 }
 
+// Same shape as setActionTxSignature, for the leg-1 (withdraw) signature on a
+// rebalance action. The status guard is identical (executing); the IS NULL
+// guard is on the leg-1 column. Leg-2 still uses setActionTxSignature.
+//
+// Rebalance recovery: if the worker crashes between leg-1 confirm and leg-2
+// broadcast, the row stays in `executing` with intermediate set + tx_signature
+// NULL. Boot recovery checks intermediate's cluster status and resumes leg-2
+// without re-broadcasting leg-1.
+export async function setActionIntermediateSignature(
+  db: Db,
+  actionId: string,
+  intermediateSignature: string,
+): Promise<boolean> {
+  const updated = await db
+    .update(proposedActions)
+    .set({ rebalanceIntermediateSignature: intermediateSignature })
+    .where(
+      and(
+        eq(proposedActions.id, actionId),
+        eq(proposedActions.status, 'executing'),
+        isNull(proposedActions.rebalanceIntermediateSignature),
+      ),
+    )
+    .returning({ id: proposedActions.id });
+  return updated.length > 0;
+}
+
 // Used by the executor's boot-time recovery loop. Returns rows that were
 // claimed but never reached a terminal state — either because the worker
 // crashed between sign and submit (txSignature populated, no confirmation

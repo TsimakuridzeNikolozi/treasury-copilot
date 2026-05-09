@@ -215,7 +215,11 @@ export function createSigner(config: SignerConfig): Signer {
         extraSigners = built.extraSigners;
         allowedPrograms = SAVE_WITHDRAW_ALLOWED_PROGRAMS;
       } else {
-        // TODO(2E–2F): Drift, Marginfi, rebalance.
+        // TODO(2E): Drift, Marginfi.
+        // Rebalance never reaches here — the executor decomposes it into
+        // withdraw + deposit allow decisions via policy.deriveRebalanceLegs
+        // and calls executeApproved twice. This branch only catches future
+        // venues that lack builders.
         instructions = [
           SystemProgram.transfer({
             fromPubkey: keypair.publicKey,

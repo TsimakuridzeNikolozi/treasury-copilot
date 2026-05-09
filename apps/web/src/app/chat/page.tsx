@@ -95,16 +95,19 @@ export default function ChatPage() {
           <ConversationContent>
             {messages.length === 0 ? (
               <ConversationEmptyState
-                description='Try: "deposit 500 USDC into Kamino from So111…"'
+                description='Try: "show my positions" or "rebalance 0.5 USDC from save to kamino"'
                 icon={<CoinsIcon className="size-8" />}
                 title="No messages yet"
               />
             ) : (
-              messages.map((m) => (
-                <Message from={m.role} key={m.id}>
+              // Multi-step turns (stepCountIs > 1) occasionally yield two
+              // messages with the same id in useChat's array. Index tiebreaker
+              // keeps React keys unique without changing message semantics.
+              messages.map((m, mi) => (
+                <Message from={m.role} key={`${m.id}-${mi}`}>
                   <MessageContent>
                     {m.parts.map((part, i) => {
-                      const key = `${m.id}-${i}`;
+                      const key = `${m.id}-${mi}-${i}`;
                       if (part.type === 'text') {
                         return (
                           <p className="whitespace-pre-wrap" key={key}>
@@ -142,7 +145,7 @@ export default function ChatPage() {
 
         <div className="border-t p-4">
           <PromptInput onSubmit={onSubmit}>
-            <PromptInputTextarea placeholder='e.g. "rebalance 2000 USDC from kamino to drift"' />
+            <PromptInputTextarea placeholder='e.g. "rebalance 0.5 USDC from save to kamino"' />
             <PromptInputFooter>
               <span className="text-muted-foreground text-xs">
                 Actions are gated by policy. No funds move without execution.

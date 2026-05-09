@@ -123,7 +123,13 @@ function summaryLine(action: ProposedActionRow['payload']): string {
     case 'withdraw':
       return `<b>Withdraw</b> ${action.amountUsdc} USDC ← ${escapeHtml(action.venue)}`;
     case 'rebalance':
-      return `<b>Rebalance</b> ${action.amountUsdc} USDC: ${escapeHtml(action.fromVenue)} → ${escapeHtml(action.toVenue)}`;
+      // Wallet line included for transparency — rebalance touches funds in
+      // the wallet (withdraw → wallet ATA → deposit), and the approver
+      // should see the address being signed for.
+      return [
+        `<b>Rebalance</b> ${action.amountUsdc} USDC: ${escapeHtml(action.fromVenue)} → ${escapeHtml(action.toVenue)}`,
+        `<i>wallet</i> <code>${escapeHtml(action.wallet)}</code>`,
+      ].join('\n');
   }
 }
 

@@ -10,11 +10,16 @@ export interface Policy {
   allowedVenues: readonly Venue[];
 }
 
+// Drift / Marginfi are intentionally not allowlisted yet — phase 1 step 2E.
+// Until they have real deposit/withdraw builders in @tc/protocols, allowing
+// them would let the executor try to build a tx for a venue that has no
+// builder, surfacing as a generic crash rather than a typed policy denial.
+// Add them back here when 2E lands.
 export const DEFAULT_POLICY: Policy = {
   requireApprovalAboveUsdc: '1000',
   maxSingleActionUsdc: '10000',
   maxAutoApprovedUsdcPer24h: '5000',
-  allowedVenues: ['kamino', 'save', 'drift', 'marginfi'],
+  allowedVenues: ['kamino', 'save'],
 };
 
 export interface EvaluateContext {
@@ -40,6 +45,13 @@ export function evaluate(
   const disallowed = venues.find((v) => !policy.allowedVenues.includes(v));
   if (disallowed) {
     return { kind: 'deny', reason: `venue '${disallowed}' is not in allowedVenues` };
+  }
+
+  if (action.kind === 'rebalance' && action.fromVenue === action.toVenue) {
+    return {
+      kind: 'deny',
+      reason: 'rebalance fromVenue and toVenue must differ',
+    };
   }
 
   const amount = new Decimal(action.amountUsdc);
@@ -76,4 +88,47 @@ export function evaluate(
   // Defensive copy: returning the input reference would let a caller mutate
   // the decision's action and the original action together.
   return { kind: 'allow', action: { ...action } };
+}
+
+// Decompose an approved rebalance into the two single-leg `allow` decisions
+// the executor drives sequentially: withdraw from `fromVenue`, then deposit
+// into `toVenue`. Both legs use the rebalance's `wallet` as the
+// destination/source, and the same `amountUsdc`.
+//
+// Trust boundary: only the policy module produces `allow` decisions. The
+// executor calls this helper with an already-approved rebalance; it cannot
+// mint allow decisions for legs the original rebalance didn't sanction.
+// `evaluate()` is the only other producer.
+//
+// Velocity-cap accounting is unaffected because the row's denormalized
+// `amount_usdc` and `policy_decision` (the rebalance) live on the parent row;
+// the derived legs never get persisted as their own rows.
+export function deriveRebalanceLegs(allow: Extract<PolicyDecision, { kind: 'allow' }>): {
+  withdraw: Extract<PolicyDecision, { kind: 'allow' }>;
+  deposit: Extract<PolicyDecision, { kind: 'allow' }>;
+} {
+  const action = allow.action;
+  if (action.kind !== 'rebalance') {
+    throw new Error(`deriveRebalanceLegs called with non-rebalance action: ${action.kind}`);
+  }
+  return {
+    withdraw: {
+      kind: 'allow',
+      action: {
+        kind: 'withdraw',
+        venue: action.fromVenue,
+        amountUsdc: action.amountUsdc,
+        destinationWallet: action.wallet,
+      },
+    },
+    deposit: {
+      kind: 'allow',
+      action: {
+        kind: 'deposit',
+        venue: action.toVenue,
+        amountUsdc: action.amountUsdc,
+        sourceWallet: action.wallet,
+      },
+    },
+  };
 }

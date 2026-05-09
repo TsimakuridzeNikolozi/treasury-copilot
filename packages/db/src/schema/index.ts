@@ -38,7 +38,13 @@ export const proposedActions = pgTable(
     telegramMessageId: integer('telegram_message_id'),
     // Persisted between sign and submit so a crash mid-broadcast can be
     // recovered by re-confirming the signature rather than re-submitting.
+    // For rebalance actions this is the leg-2 (deposit) signature; the
+    // leg-1 (withdraw) sig lives in `rebalance_intermediate_signature` below.
     txSignature: text('tx_signature'),
+    // Rebalance-only: the leg-1 (withdraw) signature. NULL for single-leg
+    // actions. The executor uses (intermediate IS NOT NULL, tx_signature IS
+    // NULL) as the resume-leg-2 marker after a crash between legs.
+    rebalanceIntermediateSignature: text('rebalance_intermediate_signature'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     executedAt: timestamp('executed_at', { withTimezone: true }),
   },
@@ -53,6 +59,10 @@ export const proposedActions = pgTable(
     uniqueIndex('proposed_actions_tx_signature_uq')
       .on(t.txSignature)
       .where(sql`${t.txSignature} IS NOT NULL`),
+    // Same defense for the leg-1 signature on rebalance.
+    uniqueIndex('proposed_actions_rebalance_intermediate_signature_uq')
+      .on(t.rebalanceIntermediateSignature)
+      .where(sql`${t.rebalanceIntermediateSignature} IS NOT NULL`),
   ],
 );
 

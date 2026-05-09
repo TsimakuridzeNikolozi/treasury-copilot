@@ -91,6 +91,7 @@ describe.skipIf(SKIP)('queries/actions', () => {
         fromVenue: 'kamino',
         toVenue: 'drift',
         amountUsdc: '100',
+        wallet: 'So11111111111111111111111111111111111111112',
       };
       const decision: PolicyDecision = { kind: 'allow', action };
       const row = await insertProposedAction(db, { action, decision, proposedBy: 'session-4' });

@@ -19,6 +19,7 @@
     "@ai-sdk/react": "^3.0.177",
     "@radix-ui/react-use-controllable-state": "^1.2.2",
     "@rive-app/react-webgl2": "^4.28.3",
+    "@solana/web3.js": "^1.95.0",
     "@streamdown/cjk": "^1.0.3",
     "@streamdown/code": "^1.1.1",
     "@streamdown/math": "^1.0.2",

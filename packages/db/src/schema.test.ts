@@ -57,6 +57,7 @@ describe.skipIf(SKIP)('schema', () => {
       fromVenue: 'kamino',
       toVenue: 'drift',
       amountUsdc: '500.000000',
+      wallet: 'So11111111111111111111111111111111111111112',
     };
 
     const [action] = await db

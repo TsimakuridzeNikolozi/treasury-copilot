@@ -9,12 +9,14 @@ import {
   openaiModelSchema,
   publicAppUrlSchema,
   solanaRpcUrlSchema,
+  treasuryPubkeyBase58Schema,
 } from '@tc/env';
 
 export const env = createEnv({
   server: {
     DATABASE_URL: databaseUrlSchema,
     SOLANA_RPC_URL: solanaRpcUrlSchema,
+    TREASURY_PUBKEY_BASE58: treasuryPubkeyBase58Schema,
     LOG_LEVEL: logLevelSchema,
 
     MODEL_PROVIDER: modelProviderSchema,

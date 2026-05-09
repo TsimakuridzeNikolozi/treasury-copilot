@@ -4,12 +4,16 @@ import {
   findApprovedForExecution,
   findInFlightExecutions,
   getApprovalAttribution,
+  setActionIntermediateSignature,
   setActionTxSignature,
   transitionAction,
 } from '@tc/db';
+import { type PolicyDecision, deriveRebalanceLegs } from '@tc/policy';
 import { createSigner } from '@tc/signer';
-import type { ExecuteResult } from '@tc/types';
+import type { ExecuteResult, ProposedAction } from '@tc/types';
 import { editApprovalCardWithExecution } from './bot';
+
+type AllowDecision = Extract<PolicyDecision, { kind: 'allow' }>;
 
 // editApprovalCardWithExecution can fail (>48h message, network blip). DB is
 // the source of truth; failing the card is cosmetic, not a recovery error.
@@ -33,6 +37,85 @@ const signer = createSigner({
   commitment: env.SIGNER_COMMITMENT,
   confirmTimeoutMs: env.SIGNER_CONFIRM_TIMEOUT_MS,
 });
+
+// Persist the leg-2 (deposit / single-leg) signature into `tx_signature`.
+// Throws if the CAS-on-NULL loses, telling the signer to abort before
+// broadcast — same shape as the original onSignature in tick().
+async function persistFinalSignature(actionId: string, sig: string): Promise<void> {
+  const won = await setActionTxSignature(db, actionId, sig);
+  if (!won) throw new Error(`signature persistence lost the race for ${actionId}`);
+}
+
+// Persist the leg-1 (withdraw) signature for a rebalance into
+// `rebalance_intermediate_signature`. Same CAS-on-NULL shape.
+async function persistIntermediateSignature(actionId: string, sig: string): Promise<void> {
+  const won = await setActionIntermediateSignature(db, actionId, sig);
+  if (!won) throw new Error(`intermediate signature persistence lost the race for ${actionId}`);
+}
+
+// Run a rebalance from leg-1 (withdraw) through leg-2 (deposit). Returns the
+// terminal ExecuteResult — either leg-1's failure/pending if it didn't reach
+// success, or leg-2's success/failure/pending. The caller transitions the
+// row to executed/failed based on this result, identical to the single-leg
+// path. `actionId` is used only for log lines.
+async function driveRebalanceFromStart(
+  actionId: string,
+  decision: AllowDecision,
+): Promise<ExecuteResult> {
+  const { withdraw } = deriveRebalanceLegs(decision);
+
+  console.log(`[executor] action ${actionId} rebalance leg-1 (withdraw) starting`);
+  const leg1 = await signer.executeApproved(withdraw, {
+    onSignature: (sig) => persistIntermediateSignature(actionId, sig),
+  });
+  if (leg1.kind !== 'success') {
+    // failure or pending — stop here. Pending leaves the row in `executing`
+    // for boot recovery to finish; failure terminally fails the row.
+    return leg1;
+  }
+  console.log(
+    `[executor] action ${actionId} rebalance leg-1 confirmed ${leg1.txSignature}, executing leg-2 (deposit)`,
+  );
+  return driveRebalanceLeg2(actionId, decision);
+}
+
+// Run only leg-2 (deposit). Used both as the second half of
+// driveRebalanceFromStart and from boot recovery when leg-1 already
+// confirmed in a prior run but leg-2 never started.
+async function driveRebalanceLeg2(
+  actionId: string,
+  decision: AllowDecision,
+): Promise<ExecuteResult> {
+  const { deposit } = deriveRebalanceLegs(decision);
+  const leg2 = await signer.executeApproved(deposit, {
+    onSignature: (sig) => persistFinalSignature(actionId, sig),
+  });
+  if (leg2.kind === 'failure') {
+    // Leg-1 already moved funds to the wallet ATA. Annotate the error so the
+    // user / operator knows the funds are not lost — they sit in the wallet
+    // and can be re-deposited manually.
+    return {
+      kind: 'failure',
+      error: `${leg2.error} (leg-1 funds remain in wallet; can be re-deposited manually)`,
+    };
+  }
+  return leg2;
+}
+
+// Drive the signer for an `allow` decision. For rebalance, walks both legs;
+// for single-leg actions, behaves exactly as the original tick() did.
+async function executeDecision(
+  actionId: string,
+  decision: AllowDecision,
+  payload: ProposedAction,
+): Promise<ExecuteResult> {
+  if (payload.kind === 'rebalance') {
+    return driveRebalanceFromStart(actionId, decision);
+  }
+  return signer.executeApproved(decision, {
+    onSignature: (sig) => persistFinalSignature(actionId, sig),
+  });
+}
 
 let timer: NodeJS.Timeout | null = null;
 let starting = false;
@@ -91,18 +174,8 @@ async function tick(): Promise<void> {
         // human-approved rows by design (audit history). So we construct the
         // `allow`-shaped decision here from `payload` to satisfy the Signer's
         // type contract.
-        const decision = { kind: 'allow' as const, action: claimed.payload };
-        result = await signer.executeApproved(decision, {
-          onSignature: async (sig) => {
-            const won = await setActionTxSignature(db, row.id, sig);
-            if (!won) {
-              // Lost a CAS race — another writer beat us, or the row left
-              // `executing` between claim and persist. Throw so the signer
-              // returns ExecuteResult.failure without broadcasting.
-              throw new Error(`signature persistence lost the race for ${row.id}`);
-            }
-          },
-        });
+        const decision: AllowDecision = { kind: 'allow', action: claimed.payload };
+        result = await executeDecision(row.id, decision, claimed.payload);
 
         if (result.kind === 'pending') {
           // Tx broadcast but cluster status unsettled; do NOT terminally
@@ -219,6 +292,67 @@ async function recoverInFlight(): Promise<void> {
 
   for (const row of stuck) {
     try {
+      // Rebalance with leg-1 sig set but leg-2 missing: worker crashed
+      // between leg-1 confirm and leg-2 broadcast. Look up leg-1 status — if
+      // confirmed, drive leg-2 to completion; otherwise treat the
+      // intermediate as the canonical "is this tx alive?" signature.
+      if (
+        row.payload.kind === 'rebalance' &&
+        row.rebalanceIntermediateSignature &&
+        !row.txSignature
+      ) {
+        const intermediateSig = row.rebalanceIntermediateSignature;
+        const status = await signer.checkSignatureStatus(intermediateSig);
+        if (status.kind === 'reverted') {
+          const error = `recovery: rebalance leg-1 reverted: ${JSON.stringify(status.err)}`;
+          const updated = await transitionAction(db, {
+            id: row.id,
+            from: 'executing',
+            to: 'failed',
+            actor: 'signer',
+            payload: { error, rebalanceIntermediateSignature: intermediateSig },
+          });
+          console.warn(
+            `[executor] action ${row.id} recovered → failed (leg-1 reverted) ${intermediateSig}`,
+          );
+          await safeEditCard(updated, { kind: 'failure', error });
+          continue;
+        }
+        if (status.kind === 'pending') {
+          console.log(
+            `[executor] action ${row.id} leg-1 still pending in recovery; leaving executing ${intermediateSig}`,
+          );
+          continue;
+        }
+        // Confirmed: resume leg-2.
+        console.log(
+          `[executor] action ${row.id} leg-1 confirmed; resuming rebalance leg-2 (deposit)`,
+        );
+        const decision: AllowDecision = { kind: 'allow', action: row.payload };
+        const leg2 = await driveRebalanceLeg2(row.id, decision);
+        if (leg2.kind === 'pending') {
+          console.warn(
+            `[executor] action ${row.id} leg-2 pending in recovery: ${leg2.reason} ${leg2.txSignature}`,
+          );
+          continue;
+        }
+        const updated = await transitionAction(db, {
+          id: row.id,
+          from: 'executing',
+          to: leg2.kind === 'success' ? 'executed' : 'failed',
+          actor: 'signer',
+          payload:
+            leg2.kind === 'success'
+              ? { txSignature: leg2.txSignature, rebalanceIntermediateSignature: intermediateSig }
+              : { error: leg2.error, rebalanceIntermediateSignature: intermediateSig },
+        });
+        console.log(
+          `[executor] action ${row.id} recovered → ${leg2.kind === 'success' ? 'executed' : 'failed'} (leg-2)`,
+        );
+        await safeEditCard(updated, leg2);
+        continue;
+      }
+
       if (!row.txSignature) {
         await transitionAction(db, {
           id: row.id,

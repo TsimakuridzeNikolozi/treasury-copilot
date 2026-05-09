@@ -1,5 +1,6 @@
 import { env } from '@/env';
 import { type ModelProvider, isModelProvider, modelFor } from '@/lib/ai/model';
+import { Connection, PublicKey } from '@solana/web3.js';
 import { buildTools } from '@tc/agent-tools';
 import { createDb } from '@tc/db';
 import { type UIMessage, convertToModelMessages, stepCountIs, streamText } from 'ai';
@@ -13,16 +14,25 @@ export const maxDuration = 60;
 // exhaust Postgres `max_connections` within a few dev reloads.
 const db = createDb(env.DATABASE_URL);
 
-const SYSTEM_PROMPT = `You are Treasury Copilot, an AI assistant for managing a startup or DAO's USDC across Solana yield venues (kamino, drift, marginfi).
+// Module-scoped Connection — read tools share one across requests; cheap and
+// avoids re-resolving DNS / TLS each chat turn.
+const connection = new Connection(env.SOLANA_RPC_URL, { commitment: 'confirmed' });
+const treasuryAddress = new PublicKey(env.TREASURY_PUBKEY_BASE58);
 
-Your job is to propose actions through tools — never describe an action in prose without proposing it. Use proposeDeposit, proposeWithdraw, or proposeRebalance.
+const SYSTEM_PROMPT = `You are Treasury Copilot, an AI assistant for managing a startup or DAO's USDC across Solana yield venues (kamino, save).
 
-After a tool returns, briefly summarise the policy decision based ONLY on what the tool result contains:
+You have read tools and proposal tools.
+
+- For read intents ("show my positions", "what's my APY", "compare yields"), call \`getTreasurySnapshot\` and report the numbers. Render APYs as percentages with two decimals (e.g. 0.0523 → "5.23%").
+- For write intents (deposit, withdraw, rebalance), use \`proposeDeposit\`, \`proposeWithdraw\`, or \`proposeRebalance\`. Never describe an action in prose without proposing it. Wallet addresses are configured server-side — do not ask the user for them and do not include them in the tool input (they are not part of the input schema).
+- Before proposing a rebalance, ALWAYS call \`getTreasurySnapshot\` first so the user sees the supply + APY context that justifies the move.
+
+After a proposal tool returns, briefly summarise the policy decision based ONLY on what the tool result contains:
 - "allow" / status "approved" → tell the user the action was recorded as approved and is queued for execution.
 - "requires_approval" / status "pending" → tell the user the action was recorded and is awaiting human approval before it can execute.
 - "deny" / status "denied" → tell the user the policy denied it and report the reason.
 
-The tool only writes a row to the database. It does NOT move funds, send notifications, page approvers, post to Telegram, contact any external system, or trigger any downstream process. Never claim or imply otherwise — describe only what the tool result shows.`;
+The proposal tools only write a row to the database. They do NOT move funds, send notifications, page approvers, post to Telegram, contact any external system, or trigger any downstream process. Never claim or imply otherwise — describe only what the tool result shows.`;
 
 interface ChatRequest {
   messages: UIMessage[];
@@ -46,6 +56,8 @@ export async function POST(req: Request) {
     tools: buildTools(db, {
       proposedBy: sessionId ?? 'anonymous',
       modelProvider: effectiveProvider,
+      connection,
+      treasuryAddress,
     }),
     // Allow the model to call a tool, observe the result, and respond — without
     // this the stream ends right after the first tool call.

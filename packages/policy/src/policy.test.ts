@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { EvaluateContext, Policy, ProposedAction } from './index';
-import { DEFAULT_POLICY, evaluate } from './index';
+import { DEFAULT_POLICY, deriveRebalanceLegs, evaluate } from './index';
 
 const SOURCE = 'So11111111111111111111111111111111111111112';
 const FRESH: EvaluateContext = { recentAutoApprovedUsdc: '0' };
@@ -43,11 +43,27 @@ describe('policy.evaluate', () => {
       fromVenue: 'kamino',
       toVenue: 'drift',
       amountUsdc: '100',
+      wallet: SOURCE,
     };
     const decision = evaluate(action, FRESH, policy);
     expect(decision.kind).toBe('deny');
     if (decision.kind === 'deny') {
       expect(decision.reason).toContain('drift');
+    }
+  });
+
+  it('denies rebalance with the same fromVenue and toVenue', () => {
+    const action: ProposedAction = {
+      kind: 'rebalance',
+      fromVenue: 'kamino',
+      toVenue: 'kamino',
+      amountUsdc: '100',
+      wallet: SOURCE,
+    };
+    const decision = evaluate(action, FRESH);
+    expect(decision.kind).toBe('deny');
+    if (decision.kind === 'deny') {
+      expect(decision.reason).toMatch(/fromVenue.*toVenue/);
     }
   });
 
@@ -83,5 +99,38 @@ describe('policy.evaluate', () => {
       const decision = evaluate(deposit('100'), { recentAutoApprovedUsdc: '999999' }, policy);
       expect(decision.kind).toBe('deny');
     });
+  });
+});
+
+describe('policy.deriveRebalanceLegs', () => {
+  const allow = (action: ProposedAction): Extract<ReturnType<typeof evaluate>, { kind: 'allow' }> =>
+    ({ kind: 'allow', action }) as Extract<ReturnType<typeof evaluate>, { kind: 'allow' }>;
+
+  it('produces a withdraw + deposit pair anchored on the rebalance wallet', () => {
+    const rebalance: ProposedAction = {
+      kind: 'rebalance',
+      fromVenue: 'save',
+      toVenue: 'kamino',
+      amountUsdc: '0.5',
+      wallet: SOURCE,
+    };
+    const { withdraw, deposit } = deriveRebalanceLegs(allow(rebalance));
+    expect(withdraw.action).toEqual({
+      kind: 'withdraw',
+      venue: 'save',
+      amountUsdc: '0.5',
+      destinationWallet: SOURCE,
+    });
+    expect(deposit.action).toEqual({
+      kind: 'deposit',
+      venue: 'kamino',
+      amountUsdc: '0.5',
+      sourceWallet: SOURCE,
+    });
+  });
+
+  it('throws when called with a non-rebalance action', () => {
+    const dep = deposit('1');
+    expect(() => deriveRebalanceLegs(allow(dep))).toThrow(/non-rebalance/);
   });
 });
