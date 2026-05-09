@@ -2,6 +2,7 @@ import {
   type Commitment,
   Connection,
   type Keypair,
+  type PublicKey,
   SystemProgram,
   type TransactionInstruction,
 } from '@solana/web3.js';
@@ -18,7 +19,9 @@ import {
 } from '@tc/protocols/save';
 import type { ExecuteResult, PolicyDecision } from '@tc/types';
 import { signSubmitConfirm } from './submit';
-import { loadTreasuryKeypair } from './wallet';
+import { createTurnkeyTreasurySigner } from './turnkey';
+import type { TreasurySigner } from './types';
+import { createLocalKeypairTreasurySigner } from './wallet';
 
 // The trust boundary: signer can only execute actions whose PolicyDecision is
 // `allow`. The Extract<> in the parameter type makes that a compile-time check
@@ -53,12 +56,32 @@ export type RecoveryStatus =
   | { kind: 'reverted'; err: unknown }
   | { kind: 'pending' };
 
-export interface SignerConfig {
-  rpcUrl: string;
-  keypairPath: string;
-  commitment: Commitment;
-  confirmTimeoutMs: number;
-}
+// Discriminated by `backend` so adding new custody options later is additive
+// (a new union member, the executor's tagged switch flags missing wiring).
+export type SignerConfig =
+  | {
+      backend: 'local';
+      rpcUrl: string;
+      keypairPath: string;
+      commitment: Commitment;
+      confirmTimeoutMs: number;
+    }
+  | {
+      backend: 'turnkey';
+      rpcUrl: string;
+      turnkey: {
+        apiPublicKey: string;
+        apiPrivateKey: string;
+        baseUrl: string;
+        organizationId: string;
+        signWith: string;
+      };
+      commitment: Commitment;
+      confirmTimeoutMs: number;
+      // Hard cap on a single Turnkey sign call. Separate from
+      // confirmTimeoutMs (which bounds post-broadcast confirmation only).
+      signTimeoutMs: number;
+    };
 
 // Per-action program allowlists. The signer holds the keys, so it has final
 // say over which programs may be CPI'd. Stricter than a global allowlist: if
@@ -135,16 +158,32 @@ const SAVE_WITHDRAW_ALLOWED_PROGRAMS = new Set<string>([
 
 const SMOKE_TRANSFER_ALLOWED_PROGRAMS = new Set<string>([SYSTEM_PROGRAM]);
 
+function buildTreasurySigner(config: SignerConfig): TreasurySigner {
+  switch (config.backend) {
+    case 'local':
+      return createLocalKeypairTreasurySigner(config.keypairPath);
+    case 'turnkey':
+      return createTurnkeyTreasurySigner({
+        apiPublicKey: config.turnkey.apiPublicKey,
+        apiPrivateKey: config.turnkey.apiPrivateKey,
+        baseUrl: config.turnkey.baseUrl,
+        organizationId: config.turnkey.organizationId,
+        signWith: config.turnkey.signWith,
+        signTimeoutMs: config.signTimeoutMs,
+      });
+  }
+}
+
 // Phase 1, Step 2B: real Kamino Lend USDC deposit. Other venues/kinds fall
 // through to the 2A self-transfer smoke instruction so every approved action
 // still produces a real signature; demo stays uniform and the smoke path
 // remains the known-good baseline for diagnosing protocol-layer breakage.
 export function createSigner(config: SignerConfig): Signer {
   const connection = new Connection(config.rpcUrl, { commitment: config.commitment });
-  const keypair = loadTreasuryKeypair(config.keypairPath);
-  const treasuryAddress = keypair.publicKey.toBase58();
+  const treasurySigner = buildTreasurySigner(config);
+  const treasuryAddress = treasurySigner.publicKey.toBase58();
   console.log(
-    `[signer] treasury=${treasuryAddress} rpc=${config.rpcUrl} commitment=${config.commitment}`,
+    `[signer] backend=${config.backend} treasury=${treasuryAddress} rpc=${config.rpcUrl} commitment=${config.commitment}`,
   );
 
   // Loud banner when a development worker is pointed at mainnet. Easy mistake
@@ -161,6 +200,8 @@ export function createSigner(config: SignerConfig): Signer {
         'Approved actions will sign REAL funds. Set NODE_ENV=production to silence.',
     );
   }
+
+  const treasuryPubkey: PublicKey = treasurySigner.publicKey;
 
   return {
     async executeApproved(decision, opts) {
@@ -193,7 +234,7 @@ export function createSigner(config: SignerConfig): Signer {
       let instructions: TransactionInstruction[];
       let extraSigners: Keypair[];
       let allowedPrograms: Set<string>;
-      const ctx = { connection, owner: keypair.publicKey };
+      const ctx = { connection, owner: treasuryPubkey };
       if (action.kind === 'deposit' && action.venue === 'kamino') {
         const built = await buildKaminoDepositInstructions(action, ctx);
         instructions = built.instructions;
@@ -222,8 +263,8 @@ export function createSigner(config: SignerConfig): Signer {
         // venues that lack builders.
         instructions = [
           SystemProgram.transfer({
-            fromPubkey: keypair.publicKey,
-            toPubkey: keypair.publicKey,
+            fromPubkey: treasuryPubkey,
+            toPubkey: treasuryPubkey,
             lamports: 0,
           }),
         ];
@@ -248,7 +289,7 @@ export function createSigner(config: SignerConfig): Signer {
 
       return signSubmitConfirm({
         connection,
-        keypair,
+        treasurySigner,
         instructions,
         extraSigners,
         commitment: config.commitment,

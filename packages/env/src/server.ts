@@ -43,4 +43,39 @@ export const anthropicModelSchema = z.string().min(1).default('claude-sonnet-4-6
 export const openaiApiKeySchema = z.string().min(1).optional();
 export const openaiModelSchema = z.string().min(1).default('gpt-5.4-mini');
 
-// TODO(phase-1): add Privy/Turnkey/Telegram/Helius schemas as integrations land.
+// Signer backend selector. `local` reads a Solana CLI keypair off disk; only
+// fit for dev. `turnkey` delegates signing to Turnkey's HSM-backed API. The
+// worker env is shaped as a discriminated union on this so the per-backend
+// required vars live in one schema with precise per-field error messages.
+export const signerBackendSchema = z.enum(['local', 'turnkey']).default('local');
+
+// Strip an optional `0x` prefix before validating hex — operators tend to copy
+// keys directly out of the Turnkey console which sometimes preserves it.
+const hex = (length: number, label: string) =>
+  z
+    .string()
+    .transform((s) => s.replace(/^0x/, ''))
+    .pipe(
+      z
+        .string()
+        .regex(new RegExp(`^[0-9a-fA-F]{${length}}$`), `${label} must be ${length} hex chars`),
+    );
+
+// Turnkey's API uses P-256 ECDSA stamps. Public keys are 33-byte compressed
+// (66 hex chars); private keys are 32-byte scalars (64 hex chars).
+export const turnkeyApiPublicKeySchema = hex(66, 'TURNKEY_API_PUBLIC_KEY');
+export const turnkeyApiPrivateKeySchema = hex(64, 'TURNKEY_API_PRIVATE_KEY');
+export const turnkeyOrganizationIdSchema = z.string().uuid();
+export const turnkeyBaseUrlSchema = z.string().url().default('https://api.turnkey.com');
+// `signWith` accepts a wallet account address, private key address, or
+// private key id — for our Solana flow it's the wallet account's base58
+// address. We validate as a Solana pubkey (no other id format would pass).
+export const turnkeySignWithSchema = solanaPubkeyBase58Schema.describe(
+  'Turnkey wallet account address (base58 Solana pubkey) — passed as `signWith` on every sign request.',
+);
+
+// Per-call signing timeout. Bounds Turnkey API latency separately from the
+// post-broadcast confirmation budget (`SIGNER_CONFIRM_TIMEOUT_MS`); without
+// this, a stalled Turnkey API would pin an executor tick indefinitely. Local
+// backend ignores it.
+export const signerSignTimeoutMsSchema = z.coerce.number().int().positive().default(10_000);

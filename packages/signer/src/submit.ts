@@ -7,26 +7,29 @@ import {
 } from '@solana/web3.js';
 import type { ExecuteResult } from '@tc/types';
 import bs58 from 'bs58';
+import type { TreasurySigner } from './types';
 
 export interface SignSubmitConfirmOpts {
   connection: Connection;
-  keypair: Keypair;
+  treasurySigner: TreasurySigner;
   instructions: TransactionInstruction[];
   // Ephemeral signers required by individual instructions (e.g. Pyth pull-
   // oracle keypairs from Save's setup ixs, fresh-account keypairs that some
-  // protocols require for first-deposit init). Always includes `keypair` as
-  // the fee payer; these are added via tx.sign(keypair, ...extraSigners).
-  // signatures[0] remains the fee-payer signature, so onSignature/recovery
-  // semantics are unchanged.
+  // protocols require for first-deposit init). Applied via tx.partialSign
+  // BEFORE the treasury signs the message; the treasury (fee-payer)
+  // signature is then attached at index 0 via tx.addSignature, so
+  // signatures[0] remains the fee-payer signature and onSignature/recovery
+  // semantics are unchanged. partialSign(...[]) is a no-op, so the empty
+  // case (deposit/withdraw on Kamino, etc.) goes through this path too.
   extraSigners?: Keypair[];
   commitment: Commitment;
   timeoutMs: number;
-  // Called after tx.sign() but before sendRawTransaction(). Use this to
-  // durably persist the signature so a crash between persist and confirmation
-  // can be recovered (re-confirm the signature rather than re-submit). If the
-  // hook throws, the tx is NOT broadcast — better to leave an `executing` row
-  // with no signature (recovery marks failed) than to broadcast a tx whose
-  // signature isn't durably traceable.
+  // Called after signing but before sendRawTransaction. Use this to durably
+  // persist the signature so a crash between persist and confirmation can be
+  // recovered (re-confirm rather than re-submit). If the hook throws, the tx
+  // is NOT broadcast — better to leave an `executing` row with no signature
+  // (recovery marks failed) than to broadcast a tx whose signature isn't
+  // durably traceable.
   onSignature?: (signature: string) => Promise<void>;
 }
 
@@ -60,18 +63,28 @@ async function resolvePostBroadcastOutcome(
   return { kind: 'pending', txSignature: signature, reason };
 }
 
-// Builds a legacy Transaction, signs, persists the signature via onSignature,
-// submits, and races confirmation against a hard timeout. confirmTransaction
-// hangs indefinitely on a stalled RPC; without the race a worker could sit on
-// a `pending` row forever.
+// Builds a legacy Transaction, signs it via the TreasurySigner (the local
+// keypair backend signs in-process; Turnkey signs over an HSM API call),
+// persists the signature via onSignature, submits, and races confirmation
+// against a hard timeout. confirmTransaction hangs indefinitely on a stalled
+// RPC; without the race a worker could sit on a `pending` row forever.
 //
-// Multi-signer: `keypair` is always the fee payer; `extraSigners` are added
-// for ix-level requirements (Pyth oracle pull keypairs, fresh-account init
-// keypairs, etc.). signatures[0] is still the fee-payer signature, so the
-// onSignature hook and recovery loop are unchanged.
+// Multi-signer ordering matters: ephemeral keypairs (Pyth oracle pulls,
+// fresh-account init keys, etc.) sign FIRST via tx.partialSign so their
+// public keys are recorded in the message. We then serialize that message
+// and ask the TreasurySigner to sign it, attaching the result at the
+// fee-payer slot via tx.addSignature. signatures[0] remains the fee-payer
+// signature, so the onSignature hook and recovery loop are unchanged.
 export async function signSubmitConfirm(opts: SignSubmitConfirmOpts): Promise<ExecuteResult> {
-  const { connection, keypair, instructions, extraSigners, commitment, timeoutMs, onSignature } =
-    opts;
+  const {
+    connection,
+    treasurySigner,
+    instructions,
+    extraSigners,
+    commitment,
+    timeoutMs,
+    onSignature,
+  } = opts;
 
   let timeoutHandle: NodeJS.Timeout | undefined;
   // Tracks whether sendRawTransaction returned successfully. The catch below
@@ -83,10 +96,25 @@ export async function signSubmitConfirm(opts: SignSubmitConfirmOpts): Promise<Ex
     const tx = new Transaction({
       blockhash,
       lastValidBlockHeight,
-      feePayer: keypair.publicKey,
+      feePayer: treasurySigner.publicKey,
     });
     tx.add(...instructions);
-    tx.sign(keypair, ...(extraSigners ?? []));
+
+    // Order: ephemeral signers first (no-op when empty), then the treasury.
+    // Calling partialSign with an empty list is safe — common single-signer
+    // path (Kamino deposit/withdraw) hits exactly this branch.
+    if (extraSigners && extraSigners.length > 0) {
+      tx.partialSign(...extraSigners);
+    }
+
+    // Bracket the treasury sign call so the slow-Turnkey case is visible in
+    // logs without grepping. Local backend logs ~ms; Turnkey logs hundreds.
+    const signStart = Date.now();
+    const message = tx.serializeMessage();
+    const treasurySigBytes = await treasurySigner.signSerializedMessage(message);
+    const signMs = Date.now() - signStart;
+    console.log(`[signer] treasury sign ${signMs}ms`);
+    tx.addSignature(treasurySigner.publicKey, Buffer.from(treasurySigBytes));
 
     // Solana signatures are deterministic from the signed bytes, so the
     // base58-encoded fee-payer signature here matches what the cluster will
