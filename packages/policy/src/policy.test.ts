@@ -3,10 +3,14 @@ import type { EvaluateContext, Policy, ProposedAction } from './index';
 import { DEFAULT_POLICY, deriveRebalanceLegs, evaluate } from './index';
 
 const SOURCE = 'So11111111111111111111111111111111111111112';
+// Stable test treasury id — evaluate() doesn't touch the DB so the value
+// just has to satisfy the uuid schema. Same shape as gen_random_uuid().
+const TREASURY_ID = '00000000-0000-4000-8000-000000000001';
 const FRESH: EvaluateContext = { recentAutoApprovedUsdc: '0' };
 
 const deposit = (amountUsdc: string): ProposedAction => ({
   kind: 'deposit',
+  treasuryId: TREASURY_ID,
   venue: 'kamino',
   amountUsdc,
   sourceWallet: SOURCE,
@@ -40,6 +44,7 @@ describe('policy.evaluate', () => {
     const policy: Policy = { ...DEFAULT_POLICY, allowedVenues: ['kamino'] };
     const action: ProposedAction = {
       kind: 'rebalance',
+      treasuryId: TREASURY_ID,
       fromVenue: 'kamino',
       toVenue: 'drift',
       amountUsdc: '100',
@@ -55,6 +60,7 @@ describe('policy.evaluate', () => {
   it('denies rebalance with the same fromVenue and toVenue', () => {
     const action: ProposedAction = {
       kind: 'rebalance',
+      treasuryId: TREASURY_ID,
       fromVenue: 'kamino',
       toVenue: 'kamino',
       amountUsdc: '100',
@@ -109,6 +115,7 @@ describe('policy.deriveRebalanceLegs', () => {
   it('produces a withdraw + deposit pair anchored on the rebalance wallet', () => {
     const rebalance: ProposedAction = {
       kind: 'rebalance',
+      treasuryId: TREASURY_ID,
       fromVenue: 'save',
       toVenue: 'kamino',
       amountUsdc: '0.5',
@@ -117,12 +124,14 @@ describe('policy.deriveRebalanceLegs', () => {
     const { withdraw, deposit } = deriveRebalanceLegs(allow(rebalance));
     expect(withdraw.action).toEqual({
       kind: 'withdraw',
+      treasuryId: TREASURY_ID,
       venue: 'save',
       amountUsdc: '0.5',
       destinationWallet: SOURCE,
     });
     expect(deposit.action).toEqual({
       kind: 'deposit',
+      treasuryId: TREASURY_ID,
       venue: 'kamino',
       amountUsdc: '0.5',
       sourceWallet: SOURCE,

@@ -4,7 +4,7 @@ import { eq } from 'drizzle-orm';
 import type { Db } from '../client';
 import { auditLogs, policies } from '../schema';
 
-// Defense-in-depth: M1 only ships builders for kamino + save. The PATCH
+// Defense-in-depth: M1/M2 only ship builders for kamino + save. The PATCH
 // validator enforces this on writes, but a stray DB row (manual SQL, a
 // migration mishap, an attacker with raw DB access) could plant 'drift'
 // or 'marginfi' here. If we forwarded those to evaluate(), the policy
@@ -12,8 +12,7 @@ import { auditLogs, policies } from '../schema';
 // crash at execution time because no builder exists.
 //
 // Tighter than the type's enum: VenueSchema (in @tc/types) keeps all four
-// for forward compatibility — we re-narrow at this DB boundary. M2 widens
-// this back when the drift/marginfi builders land.
+// for forward compatibility — we re-narrow at this DB boundary.
 const ALLOWED_VENUES: readonly Venue[] = ['kamino', 'save'];
 
 // Runtime narrow row strings → Venue[]. We don't `as Venue[]` because a
@@ -33,15 +32,18 @@ function narrowVenues(raw: readonly string[]): Venue[] {
   return out;
 }
 
-// The singleton policy row's primary key. M2 drops the singleton CHECK and
-// switches the PK to `treasury_id`.
-const POLICY_ID = 'default';
-
-// Reads the singleton policy row. Falls back to the in-source DEFAULT_POLICY
-// when the row is missing — fresh DBs and forgotten seeds both work without
-// throwing. The first PATCH /api/policy creates the row.
-export async function getPolicy(db: Db): Promise<Policy> {
-  const row = await db.query.policies.findFirst({ where: eq(policies.id, POLICY_ID) });
+// Reads the policy for a treasury. Falls back to the in-source DEFAULT_POLICY
+// when the row is missing — fresh treasuries (just provisioned) and unedited
+// ones both work without throwing. The first PATCH /api/policy creates the
+// row.
+//
+// M2 keys per-treasury. M1 took no arg and read the singleton id='default'
+// row; the schema migration drops that column, so all callers must pass a
+// treasury id now. PR 1 callers thread `SEED_TREASURY_ID` from env until
+// PR 2 ships membership-aware lookup; PR 2+ callers pass the active
+// treasury id from getActiveTreasuryAndRole.
+export async function getPolicy(db: Db, treasuryId: string): Promise<Policy> {
+  const row = await db.query.policies.findFirst({ where: eq(policies.treasuryId, treasuryId) });
   if (!row) return DEFAULT_POLICY;
   return {
     requireApprovalAboveUsdc: row.requireApprovalAboveUsdc,
@@ -58,21 +60,26 @@ export interface PolicyMeta {
 
 // Companion read for surfacing "last updated by/at" in the editor UI without
 // changing the Policy contract that policy.evaluate() consumes. Returns nulls
-// when the row is missing (fresh DB) so the UI can render "never edited".
-export async function getPolicyMeta(db: Db): Promise<PolicyMeta> {
-  const row = await db.query.policies.findFirst({ where: eq(policies.id, POLICY_ID) });
+// when the row is missing (fresh treasury) so the UI can render "never edited".
+export async function getPolicyMeta(db: Db, treasuryId: string): Promise<PolicyMeta> {
+  const row = await db.query.policies.findFirst({ where: eq(policies.treasuryId, treasuryId) });
   if (!row) return { updatedAt: null, updatedBy: null };
   return { updatedAt: row.updatedAt ?? null, updatedBy: row.updatedBy ?? null };
 }
 
 export interface UpsertPolicyInput {
+  treasuryId: string;
   policy: Policy;
+  // Privy DID of the editor — written to audit_logs.actor.
   updatedBy: string;
 }
 
 // Atomic update + audit. If the audit insert fails (constraint, disk),
 // the policy row write rolls back — operators always see a coherent
 // audit_logs trail next to their policy state.
+//
+// The audit row carries treasury_id directly so the M3 history page can
+// scope rows per-treasury without joining through proposed_actions.
 export async function upsertPolicy(db: Db, input: UpsertPolicyInput): Promise<void> {
   // One timestamp for the whole operation — the insert path and the
   // onConflictDoUpdate path are mutually exclusive at runtime, but reusing
@@ -80,12 +87,14 @@ export async function upsertPolicy(db: Db, input: UpsertPolicyInput): Promise<vo
   // and keeps the value consistent if more fields ever take a timestamp.
   const now = new Date();
   await db.transaction(async (tx) => {
-    const before = await tx.query.policies.findFirst({ where: eq(policies.id, POLICY_ID) });
+    const before = await tx.query.policies.findFirst({
+      where: eq(policies.treasuryId, input.treasuryId),
+    });
 
     await tx
       .insert(policies)
       .values({
-        id: POLICY_ID,
+        treasuryId: input.treasuryId,
         requireApprovalAboveUsdc: input.policy.requireApprovalAboveUsdc,
         maxSingleActionUsdc: input.policy.maxSingleActionUsdc,
         maxAutoApprovedUsdcPer24h: input.policy.maxAutoApprovedUsdcPer24h,
@@ -94,7 +103,7 @@ export async function upsertPolicy(db: Db, input: UpsertPolicyInput): Promise<vo
         updatedAt: now,
       })
       .onConflictDoUpdate({
-        target: policies.id,
+        target: policies.treasuryId,
         set: {
           requireApprovalAboveUsdc: input.policy.requireApprovalAboveUsdc,
           maxSingleActionUsdc: input.policy.maxSingleActionUsdc,
@@ -107,6 +116,7 @@ export async function upsertPolicy(db: Db, input: UpsertPolicyInput): Promise<vo
 
     await tx.insert(auditLogs).values({
       kind: 'policy_updated',
+      treasuryId: input.treasuryId,
       actor: input.updatedBy,
       payload: {
         before: before

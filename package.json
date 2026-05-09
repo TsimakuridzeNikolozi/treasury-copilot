@@ -19,6 +19,7 @@
     "clean": "turbo run clean && rm -rf node_modules .turbo",
     "db:generate": "pnpm --filter @tc/db generate",
     "db:migrate": "pnpm --filter @tc/db migrate",
+    "db:seed-m2": "pnpm --filter @tc/db seed-m2",
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down"
   },

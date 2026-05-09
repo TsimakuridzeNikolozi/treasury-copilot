@@ -85,3 +85,14 @@ export const signerSignTimeoutMsSchema = z.coerce.number().int().positive().defa
 // Bearer JWT the chat client sends. Visible once on app creation in the
 // Privy dashboard; rotating it requires re-issuing in dashboard.
 export const privyAppSecretSchema = z.string().min(1).describe('Privy app secret');
+
+// Seed treasury id (uuid). Written to `apps/web/.env.local` by the M2 seed
+// script (db:seed-m2) — chat/policy/settings routes read this until PR 2
+// ships membership-aware lookup via the active-treasury cookie. Validating
+// as uuid here so the operator catches typos at boot rather than at first
+// query. Removed from web env in PR 4 once getActiveTreasuryAndRole is
+// the single source of truth.
+export const seedTreasuryIdSchema = z
+  .string()
+  .uuid()
+  .describe('M2 seed treasury id — written by db:seed-m2');

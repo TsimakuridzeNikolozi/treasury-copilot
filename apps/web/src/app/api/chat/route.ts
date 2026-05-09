@@ -59,6 +59,16 @@ export async function POST(req: Request) {
       modelProvider: effectiveProvider,
       connection,
       treasuryAddress,
+      // M2 PR 1: chat tools propose against the seed treasury until PR 2
+      // ships membership-aware lookup via the active-treasury cookie.
+      // The seed id is written by `pnpm db:seed-m2` and pinned in
+      // `.env.local` as SEED_TREASURY_ID.
+      // TODO(2-PR2): replace env.SEED_TREASURY_ID with the active treasury
+      // id resolved from the cookie + requireMembership. Until then any
+      // authenticated user proposes against the seed; bounded today
+      // because the seed is the only treasury, a cross-tenant data leak
+      // the moment PR 2 ships per-user provisioning.
+      treasuryId: env.SEED_TREASURY_ID,
     }),
     // Allow the model to call a tool, observe the result, and respond — without
     // this the stream ends right after the first tool call.

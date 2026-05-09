@@ -12,8 +12,15 @@ const SolanaAddressSchema = z
   .string()
   .regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/, 'must be a base58 Solana address');
 
+// M2 multi-tenancy: every action belongs to a treasury. The treasury id is
+// a uuid; the chat tools strip-and-re-inject this server-side from the
+// active-treasury cookie (same pattern as sourceWallet/destinationWallet).
+// The AI never sets it — letting it would be a hallucination surface.
+const TreasuryIdSchema = z.string().uuid();
+
 export const DepositActionSchema = z.object({
   kind: z.literal('deposit'),
+  treasuryId: TreasuryIdSchema,
   venue: VenueSchema,
   amountUsdc: UsdcAmountSchema,
   sourceWallet: SolanaAddressSchema,
@@ -22,6 +29,7 @@ export type DepositAction = z.infer<typeof DepositActionSchema>;
 
 export const WithdrawActionSchema = z.object({
   kind: z.literal('withdraw'),
+  treasuryId: TreasuryIdSchema,
   venue: VenueSchema,
   amountUsdc: UsdcAmountSchema,
   destinationWallet: SolanaAddressSchema,
@@ -30,6 +38,7 @@ export type WithdrawAction = z.infer<typeof WithdrawActionSchema>;
 
 export const RebalanceActionSchema = z.object({
   kind: z.literal('rebalance'),
+  treasuryId: TreasuryIdSchema,
   fromVenue: VenueSchema,
   toVenue: VenueSchema,
   amountUsdc: UsdcAmountSchema,

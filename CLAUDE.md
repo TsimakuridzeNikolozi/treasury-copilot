@@ -44,6 +44,18 @@ docker compose up -d postgres
 
 `SKIP_ENV_VALIDATION=1` is the documented escape hatch in `apps/web/src/env.ts` if you need to build without env (CI image bake, etc.).
 
+### M2 PR 1 upgrade flow (one-time)
+
+After pulling PR 1, every existing checkout needs:
+
+```bash
+pnpm db:migrate         # applies 0006 — adds users/treasuries/treasury_memberships + nullable treasury_id columns
+pnpm db:seed-m2         # inserts seed treasury, backfills, applies the M2 structural flips
+# copy the printed SEED_TREASURY_ID=<uuid> into apps/web/.env.local
+```
+
+The seed script auto-loads `apps/web/.env.local` and `apps/worker/.env` (already-set shell vars take precedence), so no `set -a; source …` is needed. It is idempotent — safe to re-run. Why no Migration B SQL in the journal: drizzle-orm's migrator wraps all pending migrations in a single transaction, so a NOT NULL flip on `proposed_actions.treasury_id` would roll Migration A back atomically when M1 rows still exist. Inlining the flips into the seed script (after backfill) sidesteps that.
+
 ## Architecture
 
 ### The trust boundary (security-critical)

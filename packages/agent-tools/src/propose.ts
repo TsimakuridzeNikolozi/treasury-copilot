@@ -111,8 +111,10 @@ export async function proposeAction(
   now: () => Date = () => new Date(),
 ): Promise<ProposeActionResult> {
   const since = new Date(now().getTime() - TWENTY_FOUR_HOURS_MS);
-  const recentAutoApprovedUsdc = await sumAutoApprovedSince(db, since);
-  const effectivePolicy = policy ?? (await getPolicy(db));
+  // M2: per-treasury velocity cap and per-treasury policy lookup. Both
+  // queries scope on action.treasuryId so each tenant has its own budget.
+  const recentAutoApprovedUsdc = await sumAutoApprovedSince(db, action.treasuryId, since);
+  const effectivePolicy = policy ?? (await getPolicy(db, action.treasuryId));
 
   let decision = evaluate(action, { recentAutoApprovedUsdc }, effectivePolicy);
 

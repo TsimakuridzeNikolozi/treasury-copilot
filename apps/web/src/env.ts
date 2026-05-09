@@ -10,6 +10,7 @@ import {
   privyAppSecretSchema,
   publicAppUrlSchema,
   publicPrivyAppIdSchema,
+  seedTreasuryIdSchema,
   solanaRpcUrlSchema,
   treasuryPubkeyBase58Schema,
 } from '@tc/env';
@@ -18,7 +19,14 @@ export const env = createEnv({
   server: {
     DATABASE_URL: databaseUrlSchema,
     SOLANA_RPC_URL: solanaRpcUrlSchema,
+    // M2 PR 1: still the canonical pivot for read tools (snapshot wallet
+    // address). PR 2 swaps this for the active treasury's wallet_address;
+    // PR 4 removes it entirely from web env.
     TREASURY_PUBKEY_BASE58: treasuryPubkeyBase58Schema,
+    // M2 PR 1: chat/policy/settings routes read this until PR 2 ships
+    // membership-aware lookup. Written by `pnpm db:seed-m2`. Removed from
+    // web env in PR 4.
+    SEED_TREASURY_ID: seedTreasuryIdSchema,
     LOG_LEVEL: logLevelSchema,
 
     MODEL_PROVIDER: modelProviderSchema,
