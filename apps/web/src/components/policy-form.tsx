@@ -44,7 +44,11 @@ function venuesEqual(a: readonly Venue[], b: readonly Venue[]): boolean {
   return [...a].sort().join(',') === [...b].sort().join(',');
 }
 
-export function PolicyForm({ initial, meta }: { initial: Policy; meta: PolicyFormMeta }) {
+export function PolicyForm({
+  initial,
+  meta,
+  treasuryId,
+}: { initial: Policy; meta: PolicyFormMeta; treasuryId: string }) {
   const { getAccessToken } = usePrivy();
 
   // The form has TWO sources of truth that look similar but mean different
@@ -61,6 +65,20 @@ export function PolicyForm({ initial, meta }: { initial: Policy; meta: PolicyFor
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  // Today the only path that swaps treasury reloads the page, so this
+  // effect is dormant on the live UX. Kept as defense-in-depth: if a
+  // future change re-renders PolicyForm in place with a new treasuryId
+  // (e.g. an SPA-style switcher), stale form values would otherwise be
+  // submitted against the new treasury.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only the identity-changing inputs should trigger a reset; ignoring object-shape churn on `initial`.
+  useEffect(() => {
+    const fresh = policyToState(initial);
+    setState(fresh);
+    setBaseline(fresh);
+    setError(null);
+    setSavedAt(null);
+  }, [treasuryId, initial]);
 
   const dirty = useMemo(
     () =>
@@ -121,8 +139,21 @@ export function PolicyForm({ initial, meta }: { initial: Policy; meta: PolicyFor
           maxSingleActionUsdc: state.maxSingleActionUsdc,
           maxAutoApprovedUsdcPer24h: state.maxAutoApprovedUsdcPer24h,
           allowedVenues: state.allowedVenues,
+          treasuryId,
         }),
       });
+      // 409 means the active treasury moved underneath us (multi-tab) or
+      // is gone (mid-bootstrap). Force a full reload so the form
+      // re-renders against the new treasury's policy. No partial save.
+      if (res.status === 409) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        if (body.error === 'no_active_treasury') {
+          window.location.replace('/');
+          return;
+        }
+        window.location.reload();
+        return;
+      }
       if (!res.ok) {
         const body = await res.text();
         throw new Error(body || `${res.status} ${res.statusText}`);

@@ -23,6 +23,26 @@ export function middleware(req: NextRequest) {
   return NextResponse.redirect(url);
 }
 
+// `/api/me/bootstrap` and `/api/treasury/...` need the soft cookie
+// presence gate so an unauthenticated client gets a 401 from middleware
+// rather than reaching the strict-verify path inside the handler. They
+// still call `verifyBearer` themselves — middleware is a fast pre-filter,
+// not the auth boundary.
+//
+// `/api/auth/logout` is intentionally NOT in the matcher: it must work
+// for users whose Privy cookie has already been invalidated client-side
+// (browser back-button after sign-out, Privy session-expired race, etc.)
+// so `tc_active_treasury` can still be cleared. POST-only, so an
+// unauthenticated GET attempt 405s; the only "vulnerability" is that
+// SameSite=Lax-permitted POSTs let CSRF force a treasury re-pick, which
+// the route's own threat-model docstring already covers.
 export const config = {
-  matcher: ['/chat/:path*', '/settings/:path*', '/api/chat/:path*', '/api/policy/:path*'],
+  matcher: [
+    '/chat/:path*',
+    '/settings/:path*',
+    '/api/chat/:path*',
+    '/api/policy/:path*',
+    '/api/me/:path*',
+    '/api/treasury/:path*',
+  ],
 };

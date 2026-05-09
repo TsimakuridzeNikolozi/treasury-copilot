@@ -1,19 +1,24 @@
 import { env } from '@/env';
+import { resolveActiveTreasury } from '@/lib/active-treasury';
 import { type ModelProvider, isModelProvider, modelFor } from '@/lib/ai/model';
 import { db } from '@/lib/db';
 import { verifyBearer } from '@/lib/privy';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { buildTools } from '@tc/agent-tools';
 import { type UIMessage, convertToModelMessages, stepCountIs, streamText } from 'ai';
+import { z } from 'zod';
 
 // postgres-js uses Node APIs not available in the Edge runtime.
 export const runtime = 'nodejs';
 export const maxDuration = 60;
+// Per-user resolution via cookie isn't part of Next 15's URL-based cache
+// key. Force-dynamic so streaming responses don't accidentally cross
+// users on a stale prerender.
+export const dynamic = 'force-dynamic';
 
 // Module-scoped Connection — read tools share one across requests; cheap and
 // avoids re-resolving DNS / TLS each chat turn.
 const connection = new Connection(env.SOLANA_RPC_URL, { commitment: 'confirmed' });
-const treasuryAddress = new PublicKey(env.TREASURY_PUBKEY_BASE58);
 
 const SYSTEM_PROMPT = `You are Treasury Copilot, an AI assistant for managing a startup or DAO's USDC across Solana yield venues (kamino, save).
 
@@ -30,10 +35,15 @@ After a proposal tool returns, briefly summarise the policy decision based ONLY 
 
 The proposal tools only write a row to the database. They do NOT move funds, send notifications, page approvers, post to Telegram, contact any external system, or trigger any downstream process. Never claim or imply otherwise — describe only what the tool result shows.`;
 
-interface ChatRequest {
-  messages: UIMessage[];
-  provider?: string;
-}
+// Zod schema. UIMessage is a structured shape from the AI SDK — we trust
+// the SDK's downstream parser there and only validate the fields we
+// directly use server-side. `treasuryId` is the body-vs-cookie 409
+// contract; missing / non-uuid 400s before reaching the cookie compare.
+const ChatRequestSchema = z.object({
+  messages: z.array(z.unknown()).min(1),
+  provider: z.string().optional(),
+  treasuryId: z.string().uuid('treasuryId must be a uuid'),
+});
 
 export async function POST(req: Request) {
   // The middleware already redirects/401s missing cookies, but only the
@@ -42,10 +52,38 @@ export async function POST(req: Request) {
   const auth = await verifyBearer(req);
   if (!auth) return new Response('unauthorized', { status: 401 });
 
-  const { messages, provider }: ChatRequest = await req.json();
+  const raw = await req.json().catch(() => null);
+  const parsed = ChatRequestSchema.safeParse(raw);
+  if (!parsed.success) {
+    return Response.json(
+      { error: 'invalid_body', detail: parsed.error.flatten().fieldErrors },
+      { status: 400 },
+    );
+  }
+  const { messages, provider, treasuryId: bodyTreasuryId } = parsed.data;
+
+  // Resolve the active treasury via cookie + membership lookup. May
+  // return a Set-Cookie if the cookie was present-but-invalid (resolver
+  // re-points it to the user's first remaining membership).
+  const resolved = await resolveActiveTreasury(req, db, auth.userId);
+  if ('onboardingRequired' in resolved) {
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (resolved.setCookieHeader) headers['set-cookie'] = resolved.setCookieHeader;
+    return new Response(JSON.stringify({ error: 'no_active_treasury' }), {
+      status: 409,
+      headers,
+    });
+  }
+
+  // Body-vs-cookie 409: a stale tab whose remembered treasuryId doesn't
+  // match the current cookie/membership. Force a reload so the client
+  // re-renders with the correct activeTreasuryId.
+  if (bodyTreasuryId !== resolved.treasury.id) {
+    return Response.json({ error: 'active_treasury_changed' }, { status: 409 });
+  }
 
   // Untrusted client input — fall back to the env default if it's missing or
-  // not one of the three supported providers.
+  // not one of the supported providers.
   const effectiveProvider: ModelProvider = isModelProvider(provider)
     ? provider
     : env.MODEL_PROVIDER;
@@ -53,27 +91,25 @@ export async function POST(req: Request) {
   const result = streamText({
     model: modelFor(effectiveProvider),
     system: SYSTEM_PROMPT,
-    messages: await convertToModelMessages(messages),
+    messages: await convertToModelMessages(messages as UIMessage[]),
     tools: buildTools(db, {
       proposedBy: auth.userId,
       modelProvider: effectiveProvider,
       connection,
-      treasuryAddress,
-      // M2 PR 1: chat tools propose against the seed treasury until PR 2
-      // ships membership-aware lookup via the active-treasury cookie.
-      // The seed id is written by `pnpm db:seed-m2` and pinned in
-      // `.env.local` as SEED_TREASURY_ID.
-      // TODO(2-PR2): replace env.SEED_TREASURY_ID with the active treasury
-      // id resolved from the cookie + requireMembership. Until then any
-      // authenticated user proposes against the seed; bounded today
-      // because the seed is the only treasury, a cross-tenant data leak
-      // the moment PR 2 ships per-user provisioning.
-      treasuryId: env.SEED_TREASURY_ID,
+      treasuryAddress: new PublicKey(resolved.treasury.walletAddress),
+      treasuryId: resolved.treasury.id,
     }),
     // Allow the model to call a tool, observe the result, and respond — without
     // this the stream ends right after the first tool call.
     stopWhen: stepCountIs(5),
   });
 
-  return result.toUIMessageStreamResponse();
+  // Attach the resolver's Set-Cookie (when present) to the streaming
+  // response so the browser updates `tc_active_treasury` on the same
+  // request that returned the stale-cookie fallback.
+  const response = result.toUIMessageStreamResponse();
+  if (resolved.setCookieHeader) {
+    response.headers.append('set-cookie', resolved.setCookieHeader);
+  }
+  return response;
 }

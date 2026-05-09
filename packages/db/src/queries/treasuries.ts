@@ -1,5 +1,5 @@
 import { desc, eq } from 'drizzle-orm';
-import type { Db } from '../client';
+import type { Db, DbOrTx } from '../client';
 import { type TreasuryRow, auditLogs, treasuries, treasuryMemberships } from '../schema';
 
 export interface CreateTreasuryInput {
@@ -20,7 +20,7 @@ export interface CreateTreasuryInput {
   telegramApproverIds?: string[];
 }
 
-export async function createTreasury(db: Db, input: CreateTreasuryInput): Promise<TreasuryRow> {
+export async function createTreasury(db: DbOrTx, input: CreateTreasuryInput): Promise<TreasuryRow> {
   const [row] = await db
     .insert(treasuries)
     .values({
@@ -38,7 +38,7 @@ export async function createTreasury(db: Db, input: CreateTreasuryInput): Promis
   return row;
 }
 
-export async function getTreasuryById(db: Db, id: string): Promise<TreasuryRow | null> {
+export async function getTreasuryById(db: DbOrTx, id: string): Promise<TreasuryRow | null> {
   const row = await db.query.treasuries.findFirst({ where: eq(treasuries.id, id) });
   return row ?? null;
 }

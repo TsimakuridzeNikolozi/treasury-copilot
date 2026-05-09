@@ -1,6 +1,7 @@
 import {
   databaseUrlSchema,
   logLevelSchema,
+  seedTreasuryIdSchema,
   signerSignTimeoutMsSchema,
   solanaRpcUrlSchema,
   turnkeyApiPrivateKeySchema,
@@ -34,6 +35,11 @@ const baseEnv = z.object({
 
   ACTION_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
   EXECUTOR_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(3000),
+
+  // PR 2 temporary: the executor compares each row's `treasury_id` against
+  // this and fail-fasts non-seed rows ("signer not yet wired for treasury").
+  // Removed in PR 3 when the per-treasury signer factory ships.
+  SEED_TREASURY_ID: seedTreasuryIdSchema,
 
   SIGNER_COMMITMENT: z.enum(['processed', 'confirmed', 'finalized']).default('confirmed'),
   SIGNER_CONFIRM_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
