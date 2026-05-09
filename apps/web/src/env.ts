@@ -7,7 +7,9 @@ import {
   modelProviderSchema,
   openaiApiKeySchema,
   openaiModelSchema,
+  privyAppSecretSchema,
   publicAppUrlSchema,
+  publicPrivyAppIdSchema,
   solanaRpcUrlSchema,
   treasuryPubkeyBase58Schema,
 } from '@tc/env';
@@ -24,12 +26,16 @@ export const env = createEnv({
     ANTHROPIC_MODEL: anthropicModelSchema,
     OPENAI_API_KEY: openaiApiKeySchema,
     OPENAI_MODEL: openaiModelSchema,
+
+    PRIVY_APP_SECRET: privyAppSecretSchema,
   },
   client: {
     NEXT_PUBLIC_APP_URL: publicAppUrlSchema,
+    NEXT_PUBLIC_PRIVY_APP_ID: publicPrivyAppIdSchema,
   },
   experimental__runtimeEnv: {
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
+    NEXT_PUBLIC_PRIVY_APP_ID: process.env.NEXT_PUBLIC_PRIVY_APP_ID,
   },
   skipValidation: process.env.SKIP_ENV_VALIDATION === '1',
   emptyStringAsUndefined: true,

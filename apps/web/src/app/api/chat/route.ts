@@ -1,5 +1,6 @@
 import { env } from '@/env';
 import { type ModelProvider, isModelProvider, modelFor } from '@/lib/ai/model';
+import { verifyBearer } from '@/lib/privy';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { buildTools } from '@tc/agent-tools';
 import { createDb } from '@tc/db';
@@ -36,12 +37,17 @@ The proposal tools only write a row to the database. They do NOT move funds, sen
 
 interface ChatRequest {
   messages: UIMessage[];
-  sessionId?: string;
   provider?: string;
 }
 
 export async function POST(req: Request) {
-  const { messages, sessionId, provider }: ChatRequest = await req.json();
+  // The middleware already redirects/401s missing cookies, but only the
+  // strict in-route check verifies the JWT signature, expiry, and issuer —
+  // never trust a cookie's mere presence.
+  const auth = await verifyBearer(req);
+  if (!auth) return new Response('unauthorized', { status: 401 });
+
+  const { messages, provider }: ChatRequest = await req.json();
 
   // Untrusted client input — fall back to the env default if it's missing or
   // not one of the three supported providers.
@@ -54,7 +60,7 @@ export async function POST(req: Request) {
     system: SYSTEM_PROMPT,
     messages: await convertToModelMessages(messages),
     tools: buildTools(db, {
-      proposedBy: sessionId ?? 'anonymous',
+      proposedBy: auth.userId,
       modelProvider: effectiveProvider,
       connection,
       treasuryAddress,

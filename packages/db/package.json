@@ -21,6 +21,7 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
+    "@tc/policy": "workspace:*",
     "@tc/types": "workspace:*",
     "drizzle-orm": "^0.38.2",
     "postgres": "^3.4.5",

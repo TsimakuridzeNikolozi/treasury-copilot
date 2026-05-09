@@ -5,4 +5,7 @@ import { z } from 'zod';
 
 export const publicAppUrlSchema = z.string().url().describe('Canonical public URL of the web app');
 
-// TODO(phase-1): add public chain id / cluster name once we wire wallet UI.
+// Privy app id — public-facing identifier. Pairs with `PRIVY_APP_SECRET`
+// (server) to authenticate against Privy's API. Safe to ship to the browser;
+// the secret stays server-side.
+export const publicPrivyAppIdSchema = z.string().min(1).describe('Privy app id (public)');

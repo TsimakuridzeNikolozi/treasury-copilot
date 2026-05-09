@@ -1,6 +1,6 @@
 {
-  "id": "e17ec784-b73c-4879-a23d-1111225ae2c7",
-  "prevId": "f765020a-7af7-4186-8bde-859e8287519b",
+  "id": "b79272d8-dca5-4cea-95fb-ee85281a4872",
+  "prevId": "e17ec784-b73c-4879-a23d-1111225ae2c7",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -165,6 +165,67 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.policies": {
+      "name": "policies",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "require_approval_above_usdc": {
+          "name": "require_approval_above_usdc",
+          "type": "numeric(20, 6)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "max_single_action_usdc": {
+          "name": "max_single_action_usdc",
+          "type": "numeric(20, 6)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "max_auto_approved_usdc_per_24h": {
+          "name": "max_auto_approved_usdc_per_24h",
+          "type": "numeric(20, 6)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "allowed_venues": {
+          "name": "allowed_venues",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_by": {
+          "name": "updated_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "policies_singleton": {
+          "name": "policies_singleton",
+          "value": "\"policies\".\"id\" = 'default'"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.proposed_actions": {

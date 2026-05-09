@@ -79,3 +79,9 @@ export const turnkeySignWithSchema = solanaPubkeyBase58Schema.describe(
 // this, a stalled Turnkey API would pin an executor tick indefinitely. Local
 // backend ignores it.
 export const signerSignTimeoutMsSchema = z.coerce.number().int().positive().default(10_000);
+
+// Privy app secret — server-only. Paired with the public app id (client) to
+// instantiate `PrivyClient` in API routes / server pages and verify the
+// Bearer JWT the chat client sends. Visible once on app creation in the
+// Privy dashboard; rotating it requires re-issuing in dashboard.
+export const privyAppSecretSchema = z.string().min(1).describe('Privy app secret');
