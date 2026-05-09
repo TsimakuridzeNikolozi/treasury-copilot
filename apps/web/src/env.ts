@@ -37,6 +37,13 @@ export const env = createEnv({
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
     NEXT_PUBLIC_PRIVY_APP_ID: process.env.NEXT_PUBLIC_PRIVY_APP_ID,
   },
+  // `skipValidation` is the documented escape hatch for build contexts that
+  // can't supply env (e.g., baking a CI Docker image where secrets are
+  // injected at runtime). Setting `SKIP_ENV_VALIDATION=1` bypasses the Zod
+  // gate so `next build` doesn't fail at static collection. Never set this
+  // for `next dev` or in deployed runtime — a missing var will then surface
+  // as an opaque crash deep in a route handler instead of a clear startup
+  // failure.
   skipValidation: process.env.SKIP_ENV_VALIDATION === '1',
   emptyStringAsUndefined: true,
 });

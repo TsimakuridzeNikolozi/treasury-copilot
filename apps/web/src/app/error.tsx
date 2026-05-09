@@ -24,7 +24,7 @@ export default function GlobalError({
       >
         <AlertTriangleIcon className="size-6" />
       </div>
-      <div className="flex flex-col gap-2">
+      <div role="alert" aria-live="assertive" aria-atomic="true" className="flex flex-col gap-2">
         <h1 className="font-semibold text-3xl tracking-tight">Something broke</h1>
         <p className="max-w-md text-balance text-muted-foreground text-sm">
           An unexpected error happened while rendering this page. The trust boundary still holds —

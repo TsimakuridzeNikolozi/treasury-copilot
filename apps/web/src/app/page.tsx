@@ -15,8 +15,18 @@ export default function HomePage() {
   const next = params.get('next');
 
   useEffect(() => {
-    if (ready && authenticated && next) router.replace(next);
+    if (!ready || !authenticated) return;
+    const safe = sanitizeNextPath(next);
+    if (safe) router.replace(safe);
   }, [ready, authenticated, next, router]);
+
+  // Match AppNav's logout: await Privy's session teardown so the cookie is
+  // actually gone, then clear any `?next=` from the URL so a subsequent sign
+  // in doesn't bounce to a previously requested gated page.
+  const onSignOut = async () => {
+    await logout();
+    router.replace('/');
+  };
 
   return (
     <main className="relative flex min-h-screen flex-col items-center justify-center gap-10 px-6 py-16">
@@ -24,7 +34,7 @@ export default function HomePage() {
           stealing attention from the call-to-action. */}
       <div
         aria-hidden
-        className="-z-10 pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,theme(colors.muted)_0%,transparent_60%)]"
+        className="-z-10 pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,var(--color-muted)_0%,transparent_60%)]"
       />
 
       <div className="flex flex-col items-center gap-3 text-center">
@@ -47,7 +57,7 @@ export default function HomePage() {
         <SignedInPanel
           email={user?.email?.address ?? null}
           did={user?.id ?? null}
-          onSignOut={logout}
+          onSignOut={onSignOut}
         />
       ) : (
         <SignInPanel onSignIn={() => login()} />
@@ -139,6 +149,30 @@ function FeatureRow() {
       />
     </div>
   );
+}
+
+// Open-redirect guard: middleware sets `?next=<path>` on bounces and only
+// ever stores app-internal paths there, but the param is attacker-influenced
+// (anyone can craft a `/?next=https://evil.com` link). router.replace will
+// happily navigate off-origin if handed an absolute URL, so reject anything
+// that doesn't look like a same-origin relative path. Returns null when the
+// param is missing or unsafe — caller stays on `/`.
+function sanitizeNextPath(next: string | null): string | null {
+  if (!next) return null;
+  // Must start with `/` (relative) but not `//` (protocol-relative URLs like
+  // `//evil.com/x` would resolve cross-origin).
+  if (!next.startsWith('/') || next.startsWith('//')) return null;
+  // Catches `/\evil.com` and other backslash tricks some browsers normalise
+  // into a host-prefixed URL.
+  if (next.includes('\\')) return null;
+  // Defensive: if URL parses with a non-empty protocol/host, refuse.
+  try {
+    const parsed = new URL(next, 'http://placeholder.invalid');
+    if (parsed.host !== 'placeholder.invalid') return null;
+  } catch {
+    return null;
+  }
+  return next;
 }
 
 function Feature({ icon, title, body }: { icon: React.ReactNode; title: string; body: string }) {

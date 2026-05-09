@@ -1,3 +1,4 @@
+import { PRIVY_COOKIE } from '@/lib/privy-cookie';
 import { type NextRequest, NextResponse } from 'next/server';
 
 // Soft auth gate: redirect (or 401) unless the Privy access-token cookie is
@@ -5,11 +6,6 @@ import { type NextRequest, NextResponse } from 'next/server';
 // route handlers and on the settings server page — Edge runtime makes
 // fetching Privy's JWKS at every request awkward, and a cookie's mere
 // presence is not trustworthy on its own.
-//
-// Cookie name pinned in lib/privy.ts as `PRIVY_COOKIE`. We can't import a
-// non-edge-safe module here; the literal is duplicated for runtime safety
-// and a build-time check would be overkill.
-const PRIVY_COOKIE = 'privy-token';
 
 export function middleware(req: NextRequest) {
   const hasToken = Boolean(req.cookies.get(PRIVY_COOKIE)?.value);

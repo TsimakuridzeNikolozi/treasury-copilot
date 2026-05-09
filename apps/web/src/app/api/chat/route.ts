@@ -1,19 +1,14 @@
 import { env } from '@/env';
 import { type ModelProvider, isModelProvider, modelFor } from '@/lib/ai/model';
+import { db } from '@/lib/db';
 import { verifyBearer } from '@/lib/privy';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { buildTools } from '@tc/agent-tools';
-import { createDb } from '@tc/db';
 import { type UIMessage, convertToModelMessages, stepCountIs, streamText } from 'ai';
 
 // postgres-js uses Node APIs not available in the Edge runtime.
 export const runtime = 'nodejs';
 export const maxDuration = 60;
-
-// Module-scoped so HMR and concurrent requests share one postgres pool. Calling
-// createDb per request would open a fresh pool of 10 connections each time and
-// exhaust Postgres `max_connections` within a few dev reloads.
-const db = createDb(env.DATABASE_URL);
 
 // Module-scoped Connection — read tools share one across requests; cheap and
 // avoids re-resolving DNS / TLS each chat turn.

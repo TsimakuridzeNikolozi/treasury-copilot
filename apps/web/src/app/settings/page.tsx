@@ -1,15 +1,13 @@
 import { AppNav } from '@/components/app-nav';
 import { PolicyForm } from '@/components/policy-form';
-import { env } from '@/env';
+import { db } from '@/lib/db';
 import { PRIVY_COOKIE, privy } from '@/lib/privy';
-import { createDb, getPolicy, getPolicyMeta } from '@tc/db';
+import { getPolicy, getPolicyMeta } from '@tc/db';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 
 // postgres-js needs Node APIs not available in the Edge runtime.
 export const runtime = 'nodejs';
-
-const db = createDb(env.DATABASE_URL);
 
 export default async function SettingsPage() {
   // Strict server-side auth check before any DB read. Middleware soft-gates

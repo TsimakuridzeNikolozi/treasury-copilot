@@ -24,36 +24,66 @@ interface PolicyFormMeta {
   updatedBy: string | null;
 }
 
+interface FormState {
+  requireApprovalAboveUsdc: string;
+  maxSingleActionUsdc: string;
+  maxAutoApprovedUsdcPer24h: string;
+  allowedVenues: Venue[];
+}
+
+function policyToState(p: Policy): FormState {
+  return {
+    requireApprovalAboveUsdc: p.requireApprovalAboveUsdc,
+    maxSingleActionUsdc: p.maxSingleActionUsdc,
+    maxAutoApprovedUsdcPer24h: p.maxAutoApprovedUsdcPer24h,
+    allowedVenues: [...p.allowedVenues],
+  };
+}
+
+function venuesEqual(a: readonly Venue[], b: readonly Venue[]): boolean {
+  return [...a].sort().join(',') === [...b].sort().join(',');
+}
+
 export function PolicyForm({ initial, meta }: { initial: Policy; meta: PolicyFormMeta }) {
   const { getAccessToken } = usePrivy();
-  const [requireApprovalAboveUsdc, setRequireApprovalAbove] = useState(
-    initial.requireApprovalAboveUsdc,
-  );
-  const [maxSingleActionUsdc, setMaxSingle] = useState(initial.maxSingleActionUsdc);
-  const [maxAutoApprovedUsdcPer24h, setMaxAuto] = useState(initial.maxAutoApprovedUsdcPer24h);
-  const [allowedVenues, setAllowedVenues] = useState<Venue[]>([...initial.allowedVenues]);
+
+  // The form has TWO sources of truth that look similar but mean different
+  // things:
+  //   - `initial`     — the prop passed from the server page (frozen at SSR).
+  //   - `baseline`    — the values we last successfully persisted. Drives
+  //                     dirty detection; updated after a 204 from PATCH.
+  // Without `baseline`, a successful save leaves `initial` untouched and the
+  // dirty flag stays true forever — operators end up double-clicking Save.
+  // The DB also normalises numerics (`'500'` → `'500.000000'`) so even the
+  // exact same submitted values would compare unequal to `initial`.
+  const [state, setState] = useState<FormState>(() => policyToState(initial));
+  const [baseline, setBaseline] = useState<FormState>(() => policyToState(initial));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
-  // Dirty detection — Save disables when nothing has changed. Compare
-  // primitives directly; sort venue arrays so order changes don't count.
-  const dirty = useMemo(() => {
-    const initialVenues = [...initial.allowedVenues].sort().join(',');
-    const currentVenues = [...allowedVenues].sort().join(',');
-    return (
-      requireApprovalAboveUsdc !== initial.requireApprovalAboveUsdc ||
-      maxSingleActionUsdc !== initial.maxSingleActionUsdc ||
-      maxAutoApprovedUsdcPer24h !== initial.maxAutoApprovedUsdcPer24h ||
-      currentVenues !== initialVenues
-    );
-  }, [
-    requireApprovalAboveUsdc,
-    maxSingleActionUsdc,
-    maxAutoApprovedUsdcPer24h,
-    allowedVenues,
-    initial,
-  ]);
+  const dirty = useMemo(
+    () =>
+      state.requireApprovalAboveUsdc !== baseline.requireApprovalAboveUsdc ||
+      state.maxSingleActionUsdc !== baseline.maxSingleActionUsdc ||
+      state.maxAutoApprovedUsdcPer24h !== baseline.maxAutoApprovedUsdcPer24h ||
+      !venuesEqual(state.allowedVenues, baseline.allowedVenues),
+    [state, baseline],
+  );
+
+  // Cross-field invariant — an action above `maxSingleActionUsdc` is denied,
+  // so `requireApprovalAboveUsdc` cannot sit above it (that config would
+  // auto-deny every action). API enforces the same; mirror here so users
+  // see the issue without a round-trip. parseFloat is safe for the cap
+  // magnitudes we accept; the regex on the API side rejects scientific.
+  const requireGtMax = useMemo(() => {
+    const a = Number.parseFloat(state.requireApprovalAboveUsdc);
+    const b = Number.parseFloat(state.maxSingleActionUsdc);
+    return Number.isFinite(a) && Number.isFinite(b) && a > b;
+  }, [state.requireApprovalAboveUsdc, state.maxSingleActionUsdc]);
+
+  const allowedCount = state.allowedVenues.filter((v) => M1_VENUES.includes(v)).length;
+  const blocking = requireGtMax || allowedCount === 0;
 
   // Fade the "Saved" pulse after a few seconds so it doesn't pin forever.
   useEffect(() => {
@@ -62,8 +92,17 @@ export function PolicyForm({ initial, meta }: { initial: Policy; meta: PolicyFor
     return () => clearTimeout(t);
   }, [savedAt]);
 
+  const setField = <K extends keyof FormState>(key: K, value: FormState[K]) => {
+    setState((cur) => ({ ...cur, [key]: value }));
+  };
+
   const toggle = (v: Venue) => {
-    setAllowedVenues((cur) => (cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v]));
+    setState((cur) => ({
+      ...cur,
+      allowedVenues: cur.allowedVenues.includes(v)
+        ? cur.allowedVenues.filter((x) => x !== v)
+        : [...cur.allowedVenues, v],
+    }));
   };
 
   const onSave = async () => {
@@ -78,16 +117,22 @@ export function PolicyForm({ initial, meta }: { initial: Policy; meta: PolicyFor
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
-          requireApprovalAboveUsdc,
-          maxSingleActionUsdc,
-          maxAutoApprovedUsdcPer24h,
-          allowedVenues,
+          requireApprovalAboveUsdc: state.requireApprovalAboveUsdc,
+          maxSingleActionUsdc: state.maxSingleActionUsdc,
+          maxAutoApprovedUsdcPer24h: state.maxAutoApprovedUsdcPer24h,
+          allowedVenues: state.allowedVenues,
         }),
       });
       if (!res.ok) {
         const body = await res.text();
         throw new Error(body || `${res.status} ${res.statusText}`);
       }
+      // Snap baseline forward so dirty drops back to false. We deliberately
+      // don't refetch — server-normalised numerics (e.g. '500' →
+      // '500.000000') would re-render the user's input mid-edit and feel
+      // jumpy. Their typed string is the truth-of-record until the next
+      // page load.
+      setBaseline(state);
       setSavedAt(Date.now());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -96,7 +141,6 @@ export function PolicyForm({ initial, meta }: { initial: Policy; meta: PolicyFor
     }
   };
 
-  const allowedCount = allowedVenues.filter((v) => M1_VENUES.includes(v)).length;
   const lastUpdated = formatLastUpdated(meta);
 
   return (
@@ -105,7 +149,7 @@ export function PolicyForm({ initial, meta }: { initial: Policy; meta: PolicyFor
         className="flex flex-col gap-6"
         onSubmit={(e) => {
           e.preventDefault();
-          if (dirty) onSave();
+          if (dirty && !blocking) onSave();
         }}
       >
         <Section
@@ -115,20 +159,21 @@ export function PolicyForm({ initial, meta }: { initial: Policy; meta: PolicyFor
           <UsdcField
             label="Require approval above"
             hint="Actions at or below this amount auto-approve. Above goes to Telegram for human review."
-            value={requireApprovalAboveUsdc}
-            onChange={setRequireApprovalAbove}
+            value={state.requireApprovalAboveUsdc}
+            onChange={(v) => setField('requireApprovalAboveUsdc', v)}
+            error={requireGtMax ? 'Must be at most the max-single-action cap.' : undefined}
           />
           <UsdcField
             label="Max single action"
             hint="Hard cap. Actions above this amount are denied outright by the policy engine."
-            value={maxSingleActionUsdc}
-            onChange={setMaxSingle}
+            value={state.maxSingleActionUsdc}
+            onChange={(v) => setField('maxSingleActionUsdc', v)}
           />
           <UsdcField
             label="Max auto-approved per 24h"
             hint="Cumulative cap on auto-approved actions in any rolling 24-hour window."
-            value={maxAutoApprovedUsdcPer24h}
-            onChange={setMaxAuto}
+            value={state.maxAutoApprovedUsdcPer24h}
+            onChange={(v) => setField('maxAutoApprovedUsdcPer24h', v)}
           />
         </Section>
 
@@ -139,7 +184,7 @@ export function PolicyForm({ initial, meta }: { initial: Policy; meta: PolicyFor
           <div className="flex flex-col gap-2">
             <div className="flex flex-wrap gap-2">
               {M1_VENUES.map((v) => {
-                const active = allowedVenues.includes(v);
+                const active = state.allowedVenues.includes(v);
                 return (
                   <button
                     type="button"
@@ -168,7 +213,7 @@ export function PolicyForm({ initial, meta }: { initial: Policy; meta: PolicyFor
                 <span
                   key={v}
                   aria-disabled
-                  className="inline-flex h-9 items-center gap-2 rounded-full border border-dashed border-border bg-background px-3.5 text-muted-foreground/70 text-sm"
+                  className="inline-flex h-9 items-center gap-2 rounded-full border border-border border-dashed bg-background px-3.5 text-muted-foreground/70 text-sm"
                 >
                   {v}
                   <Badge variant="outline" className="border-border/60 text-[10px] uppercase">
@@ -204,7 +249,7 @@ export function PolicyForm({ initial, meta }: { initial: Policy; meta: PolicyFor
                 {error}
               </span>
             )}
-            <Button type="submit" disabled={!dirty || saving} className="gap-1.5">
+            <Button type="submit" disabled={!dirty || saving || blocking} className="gap-1.5">
               {saving && <Loader2Icon className="size-4 animate-spin" aria-hidden />}
               {saving ? 'Saving' : 'Save changes'}
             </Button>
@@ -240,11 +285,13 @@ function UsdcField({
   hint,
   value,
   onChange,
+  error,
 }: {
   label: string;
   hint: string;
   value: string;
   onChange: (v: string) => void;
+  error?: string;
 }) {
   const id = useId();
   return (
@@ -268,7 +315,10 @@ function UsdcField({
           </TooltipContent>
         </Tooltip>
       </div>
-      <InputGroup>
+      <InputGroup
+        className={cn(error && 'border-destructive focus-within:ring-destructive')}
+        aria-invalid={Boolean(error) || undefined}
+      >
         <InputGroupInput
           id={id}
           type="number"
@@ -277,12 +327,17 @@ function UsdcField({
           step="any"
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          aria-describedby={`${id}-hint`}
+          aria-describedby={error ? `${id}-error` : undefined}
         />
         <InputGroupAddon align="inline-end">
           <InputGroupText className="font-mono text-muted-foreground text-xs">USDC</InputGroupText>
         </InputGroupAddon>
       </InputGroup>
+      {error && (
+        <p id={`${id}-error`} className="text-destructive text-xs">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
