@@ -248,6 +248,9 @@ importers:
       ai:
         specifier: ^6.0.175
         version: 6.0.175(zod@3.25.76)
+      decimal.js:
+        specifier: ^10.6.0
+        version: 10.6.0
       zod:
         specifier: ^3.23.8
         version: 3.25.76
