@@ -1,6 +1,7 @@
 import type { PolicyDecision, ProposedAction, Venue } from '@tc/types';
 import { relations, sql } from 'drizzle-orm';
 import {
+  check,
   index,
   integer,
   jsonb,
@@ -94,6 +95,32 @@ export const auditLogs = pgTable(
     index('audit_logs_action_id_idx').on(t.actionId),
     index('audit_logs_created_at_idx').on(t.createdAt),
   ],
+);
+
+// Singleton policy table for M1. The CHECK constraint enforces that only
+// `id='default'` may exist — without it, an INSERT with a different id
+// silently succeeds and the existing `getPolicy` keeps returning the
+// 'default' row, masking the bug. M2 drops the CHECK and switches the PK
+// to `treasury_id` for multi-tenant. Decimal columns mirror the
+// `proposed_actions.amount_usdc` precedent (numeric(20,6)).
+export const policies = pgTable(
+  'policies',
+  {
+    id: text('id').primaryKey(),
+    requireApprovalAboveUsdc: numeric('require_approval_above_usdc', {
+      precision: 20,
+      scale: 6,
+    }).notNull(),
+    maxSingleActionUsdc: numeric('max_single_action_usdc', { precision: 20, scale: 6 }).notNull(),
+    maxAutoApprovedUsdcPer24h: numeric('max_auto_approved_usdc_per_24h', {
+      precision: 20,
+      scale: 6,
+    }).notNull(),
+    allowedVenues: text('allowed_venues', { enum: VENUE_VALUES }).array().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedBy: text('updated_by'),
+  },
+  (t) => [check('policies_singleton', sql`${t.id} = 'default'`)],
 );
 
 export const proposedActionsRelations = relations(proposedActions, ({ many }) => ({

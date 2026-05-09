@@ -70,6 +70,12 @@ Two pluggable backends inside `@tc/signer`, picked at runtime via `SIGNER_BACKEN
 
 Both implement an internal `TreasurySigner` interface (`packages/signer/src/types.ts`): `publicKey` + `signSerializedMessage(bytes)`. The exported `Signer.executeApproved` (the trust boundary) is unchanged — only the in-process keypair gets swapped for an HSM call. Don't import `@turnkey/sdk-server` from anywhere else; that would bypass the abstraction.
 
+### Auth + settings
+
+The web app gates `/chat` and `/settings` (and their API routes) behind Privy login. `apps/web/src/middleware.ts` does a soft cookie-presence check; strict JWT verification (`PrivyClient.verifyAuthToken`) lives in route handlers and the settings server page via `verifyBearer` / `privy.verifyAuthToken` from `apps/web/src/lib/privy.ts`. The chat client sends the access token as `Authorization: Bearer <jwt>` via the function-form `headers` on `DefaultChatTransport`, which the SDK calls per-request so token rotation is transparent. The user's stable Privy DID is recorded as `proposed_by` on each action.
+
+Policy is no longer hard-coded: the singleton `policies` row (`packages/db/src/schema/index.ts`, CHECK-constrained to `id='default'`) is the source of truth, edited via `/settings`. `getPolicy(db)` falls back to `DEFAULT_POLICY` (still in `@tc/policy`) when the row is missing. Edits land via `PATCH /api/policy` and are atomically logged in `audit_logs` with kind `'policy_updated'` (`audit_logs.kind` is plain text, not an enum — new kinds are string literals at the call site). M2 drops the singleton CHECK and re-keys the table on `treasury_id`.
+
 ### AI provider abstraction
 
 Two pluggable backends — Anthropic Claude and OpenAI. Picked at runtime via `MODEL_PROVIDER`. Both plug in through a single switch in `apps/web/src/lib/ai/model.ts`. **Don't import `@ai-sdk/anthropic` or `@ai-sdk/openai` from anywhere else** — that breaks the swap. The trust boundary is unchanged: whichever model proposes, `policy.evaluate()` decides.
@@ -85,7 +91,7 @@ agent-tools   → types, policy, signer, protocols, db
 signer        → types, policy, protocols
 policy        → types
 protocols     → types
-db            → types
+db            → types, policy
 env, types    → (leaves)
 ```
 
@@ -132,10 +138,9 @@ Biome only. **Do not add ESLint or Prettier.** Run `pnpm exec biome check --writ
 
 These are first-feature work, not setup. When asked to "add X", check this list — if it's here, the answer is "yes, that's phase-1 work, not a config tweak":
 
-- End-user auth (Privy / etc.) — the worker signs with a Turnkey-custodied treasury wallet, but there's no human login yet
+- Multi-tenant: there's a single global `policies` row keyed `id='default'` and one configured treasury wallet. M2 adds `users`/`treasuries`/`treasury_memberships` tables, RBAC, and per-user Turnkey sub-orgs.
 - Protocol SDK coverage in `packages/protocols`: Kamino and Save are wired end-to-end (deposit + withdraw); Drift and Marginfi builders are still stubs
 - Telegram bot client (grammy) in `apps/worker/src/bot.ts`
-- A `policies` table — phase-1 rules live in `packages/policy/src/index.ts` (`DEFAULT_POLICY`)
 - CI workflows (`.github/workflows/`)
 - Vercel project and Railway service configuration
 

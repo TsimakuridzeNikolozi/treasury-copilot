@@ -9,3 +9,4 @@ export type {
   ProposedActionRow,
 } from './schema';
 export * from './queries/actions';
+export * from './queries/policies';

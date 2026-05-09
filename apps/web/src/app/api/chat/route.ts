@@ -1,18 +1,14 @@
 import { env } from '@/env';
 import { type ModelProvider, isModelProvider, modelFor } from '@/lib/ai/model';
+import { db } from '@/lib/db';
+import { verifyBearer } from '@/lib/privy';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { buildTools } from '@tc/agent-tools';
-import { createDb } from '@tc/db';
 import { type UIMessage, convertToModelMessages, stepCountIs, streamText } from 'ai';
 
 // postgres-js uses Node APIs not available in the Edge runtime.
 export const runtime = 'nodejs';
 export const maxDuration = 60;
-
-// Module-scoped so HMR and concurrent requests share one postgres pool. Calling
-// createDb per request would open a fresh pool of 10 connections each time and
-// exhaust Postgres `max_connections` within a few dev reloads.
-const db = createDb(env.DATABASE_URL);
 
 // Module-scoped Connection — read tools share one across requests; cheap and
 // avoids re-resolving DNS / TLS each chat turn.
@@ -36,12 +32,17 @@ The proposal tools only write a row to the database. They do NOT move funds, sen
 
 interface ChatRequest {
   messages: UIMessage[];
-  sessionId?: string;
   provider?: string;
 }
 
 export async function POST(req: Request) {
-  const { messages, sessionId, provider }: ChatRequest = await req.json();
+  // The middleware already redirects/401s missing cookies, but only the
+  // strict in-route check verifies the JWT signature, expiry, and issuer —
+  // never trust a cookie's mere presence.
+  const auth = await verifyBearer(req);
+  if (!auth) return new Response('unauthorized', { status: 401 });
+
+  const { messages, provider }: ChatRequest = await req.json();
 
   // Untrusted client input — fall back to the env default if it's missing or
   // not one of the three supported providers.
@@ -54,7 +55,7 @@ export async function POST(req: Request) {
     system: SYSTEM_PROMPT,
     messages: await convertToModelMessages(messages),
     tools: buildTools(db, {
-      proposedBy: sessionId ?? 'anonymous',
+      proposedBy: auth.userId,
       modelProvider: effectiveProvider,
       connection,
       treasuryAddress,
