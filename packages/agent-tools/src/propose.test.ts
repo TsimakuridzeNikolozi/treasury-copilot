@@ -1,4 +1,5 @@
 import { type Db, createDb, schema } from '@tc/db';
+import { TEST_TREASURY_ID, ensureTestTreasury } from '@tc/db/test/treasury';
 import { TEST_DATABASE_URL } from '@tc/db/test/url';
 import { DEFAULT_POLICY, type Policy } from '@tc/policy';
 import type { ProposedAction, Venue } from '@tc/types';
@@ -19,6 +20,7 @@ afterAll(async () => {
 const SOURCE = 'So11111111111111111111111111111111111111112';
 const deposit = (amountUsdc: string): ProposedAction => ({
   kind: 'deposit',
+  treasuryId: TEST_TREASURY_ID,
   venue: 'kamino',
   amountUsdc,
   sourceWallet: SOURCE,
@@ -26,6 +28,7 @@ const deposit = (amountUsdc: string): ProposedAction => ({
 
 const withdraw = (amountUsdc: string, venue: Venue = 'kamino'): ProposedAction => ({
   kind: 'withdraw',
+  treasuryId: TEST_TREASURY_ID,
   venue,
   amountUsdc,
   destinationWallet: SOURCE,
@@ -33,6 +36,7 @@ const withdraw = (amountUsdc: string, venue: Venue = 'kamino'): ProposedAction =
 
 const rebalance = (amountUsdc: string, fromVenue: Venue = 'save'): ProposedAction => ({
   kind: 'rebalance',
+  treasuryId: TEST_TREASURY_ID,
   fromVenue,
   toVenue: fromVenue === 'save' ? 'kamino' : 'save',
   amountUsdc,
@@ -69,11 +73,15 @@ describe.skipIf(SKIP)('proposeAction', () => {
     await db.delete(schema.auditLogs);
     await db.delete(schema.approvals);
     await db.delete(schema.proposedActions);
-    // Drop the singleton policy row so getPolicy falls back to DEFAULT_POLICY.
-    // Without this, a tight policy saved via the M1 settings UI bleeds into
-    // the test DB and silently flips the expected decisions (deposit('500')
-    // → deny when maxSingleActionUsdc has been tuned down, etc.).
+    // Drop the policy row for the test treasury so getPolicy falls back to
+    // DEFAULT_POLICY. Without this, a tight policy saved via the M1
+    // settings UI bleeds into the test DB and silently flips the expected
+    // decisions (deposit('500') → deny when maxSingleActionUsdc has been
+    // tuned down, etc.).
     await db.delete(schema.policies);
+    // The test treasury has to exist before any insertProposedAction
+    // (treasury_id FK + NOT NULL after Migration B).
+    await ensureTestTreasury(db);
   });
 
   it('lands status=approved on the allow path and records modelProvider', async () => {
@@ -182,6 +190,44 @@ describe.skipIf(SKIP)('proposeAction', () => {
       const denyingCtx: ProposeContext = { ...ctx, balanceReader: failingReader };
       const { decision } = await proposeAction(db, deposit('1000'), denyingCtx, policy);
       expect(decision.kind).toBe('deny');
+    });
+  });
+
+  describe('per-treasury isolation', () => {
+    it('does not bleed velocity cap usage across treasuries', async () => {
+      // Insert a second treasury and burn its full daily budget there.
+      const otherId = '00000000-0000-4000-8000-0000000000A0';
+      await db
+        .insert(schema.treasuries)
+        .values({
+          id: otherId,
+          name: 'Propose Test Other',
+          walletAddress: 'So44444444444444444444444444444444444444444',
+          turnkeySubOrgId: 'test-suborg-propose-other',
+          turnkeyWalletId: null,
+          signerBackend: 'local',
+          telegramChatId: null,
+          telegramApproverIds: [],
+          createdBy: null,
+        })
+        .onConflictDoNothing();
+
+      // Burn 4500 of the other treasury's auto-approve budget.
+      const other: ProposedAction = {
+        kind: 'deposit',
+        treasuryId: otherId,
+        venue: 'kamino',
+        amountUsdc: '900',
+        sourceWallet: SOURCE,
+      };
+      for (let i = 0; i < 5; i++) {
+        await proposeAction(db, other, ctx);
+      }
+
+      // The test treasury still has its full budget — a fresh 999 should
+      // auto-approve, not escalate.
+      const { decision } = await proposeAction(db, deposit('999'), ctx);
+      expect(decision.kind).toBe('allow');
     });
   });
 });

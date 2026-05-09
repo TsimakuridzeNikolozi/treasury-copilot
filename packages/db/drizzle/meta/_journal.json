@@ -43,6 +43,13 @@
       "when": 1778325104399,
       "tag": "0005_sweet_jamie_braddock",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1778343469192,
+      "tag": "0006_m2_additive",
+      "breakpoints": true
     }
   ]
 }

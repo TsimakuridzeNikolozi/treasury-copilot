@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres from 'postgres';
+import { applyM2StructuralFlips } from '../scripts/m2-structural-flips';
 import { TEST_DATABASE_URL } from './url';
 
 // No teardown is registered: keeping treasury_test around between runs makes
@@ -14,7 +15,8 @@ export default async function globalSetup() {
 
   const url = new URL(TEST_DATABASE_URL);
   const dbName = url.pathname.slice(1);
-  if (!dbName) throw new Error(`TEST_DATABASE_URL is missing a database name: ${TEST_DATABASE_URL}`);
+  if (!dbName)
+    throw new Error(`TEST_DATABASE_URL is missing a database name: ${TEST_DATABASE_URL}`);
 
   const adminUrl = new URL(TEST_DATABASE_URL);
   adminUrl.pathname = '/postgres';
@@ -49,9 +51,21 @@ export default async function globalSetup() {
     await migrationClient`SELECT pg_advisory_lock(${MIGRATION_LOCK_KEY})`;
     try {
       const here = dirname(fileURLToPath(import.meta.url));
-      await migrate(drizzle(migrationClient), {
+      const db = drizzle(migrationClient);
+      await migrate(db, {
         migrationsFolder: resolve(here, '../drizzle'),
       });
+      // Test DB cleanup before the structural flips: any pre-existing
+      // M1 rows would block the NOT NULL flip on
+      // proposed_actions.treasury_id since they were written before the
+      // column existed. Tests don't care about historical M1 data
+      // (every suite's beforeEach truncates anyway), so we wipe the
+      // tables here to let the flips apply on a clean slate.
+      // Idempotent: TRUNCATE on already-empty tables is fine.
+      await migrationClient`TRUNCATE TABLE audit_logs, approvals, proposed_actions, policies CASCADE`;
+      // Migration B equivalent — see comment in scripts/m2-structural-flips.ts.
+      // Idempotent so re-runs are safe.
+      await applyM2StructuralFlips(db);
     } finally {
       await migrationClient`SELECT pg_advisory_unlock(${MIGRATION_LOCK_KEY})`;
     }

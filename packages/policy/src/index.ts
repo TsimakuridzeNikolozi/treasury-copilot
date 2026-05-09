@@ -116,6 +116,7 @@ export function deriveRebalanceLegs(allow: Extract<PolicyDecision, { kind: 'allo
       kind: 'allow',
       action: {
         kind: 'withdraw',
+        treasuryId: action.treasuryId,
         venue: action.fromVenue,
         amountUsdc: action.amountUsdc,
         destinationWallet: action.wallet,
@@ -125,6 +126,7 @@ export function deriveRebalanceLegs(allow: Extract<PolicyDecision, { kind: 'allo
       kind: 'allow',
       action: {
         kind: 'deposit',
+        treasuryId: action.treasuryId,
         venue: action.toVenue,
         amountUsdc: action.amountUsdc,
         sourceWallet: action.wallet,

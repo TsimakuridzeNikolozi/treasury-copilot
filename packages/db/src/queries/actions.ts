@@ -69,6 +69,11 @@ export interface InsertProposedActionInput {
 // inside `policy_decision.action`). This is intentional — the policy_decision
 // column is a self-contained permission slip the signer reads directly, so the
 // action it authorises must travel with it.
+//
+// M2: treasury_id is sourced from the action itself (action.treasuryId is
+// required by the @tc/types schema). Both the proposed_actions row and the
+// audit_logs row are keyed on the same treasury so per-treasury filters
+// don't need a JOIN.
 
 export async function insertProposedAction(
   db: Db,
@@ -78,6 +83,7 @@ export async function insertProposedAction(
     const [row] = await tx
       .insert(proposedActions)
       .values({
+        treasuryId: input.action.treasuryId,
         payload: input.action,
         amountUsdc: input.action.amountUsdc,
         venue: venueFor(input.action),
@@ -91,6 +97,7 @@ export async function insertProposedAction(
     const audit: NewAuditLogRow = {
       kind: 'action_proposed',
       actionId: row.id,
+      treasuryId: input.action.treasuryId,
       actor: 'agent',
       payload: {
         action: input.action,
@@ -169,6 +176,7 @@ async function transitionActionInTx(
   const audit: NewAuditLogRow = {
     kind: 'status_transition',
     actionId: row.id,
+    treasuryId: row.treasuryId,
     actor: actorString(input.actor),
     payload: {
       from: input.from,
@@ -188,7 +196,9 @@ export async function transitionAction(
   return db.transaction((tx) => transitionActionInTx(tx, input));
 }
 
-// Sum USDC of auto-approved actions still in flight or completed in [since, now].
+// Sum USDC of auto-approved actions still in flight or completed in [since, now]
+// for a single treasury. Per-treasury so each tenant has its own velocity
+// budget — without this, a heavy User A would block User B's auto-approvals.
 //
 // Filter rationale:
 // - `policy_decision ->> 'kind' = 'allow'` keeps the auto-approved budget
@@ -205,7 +215,11 @@ export async function transitionAction(
 // proposals can both observe the same total and both pass the cap. Tolerated
 // today (max overshoot = one `requireApprovalAboveUsdc`); fix with a single
 // transaction or an advisory lock when load demands it.
-export async function sumAutoApprovedSince(db: Db, since: Date): Promise<string> {
+export async function sumAutoApprovedSince(
+  db: Db,
+  treasuryId: string,
+  since: Date,
+): Promise<string> {
   const [row] = await db
     .select({
       total: sql<string>`COALESCE(SUM(${proposedActions.amountUsdc}), 0)::text`,
@@ -213,6 +227,7 @@ export async function sumAutoApprovedSince(db: Db, since: Date): Promise<string>
     .from(proposedActions)
     .where(
       and(
+        eq(proposedActions.treasuryId, treasuryId),
         inArray(proposedActions.status, ['approved', 'executing', 'executed']),
         sql`${proposedActions.policyDecision} ->> 'kind' = 'allow'`,
         gte(proposedActions.createdAt, since),
@@ -223,6 +238,9 @@ export async function sumAutoApprovedSince(db: Db, since: Date): Promise<string>
 
 // Find approved actions ready for the executor to pick up. FIFO ordering so
 // older actions don't get starved; `limit` bounds each tick.
+//
+// System-wide: the worker handles all tenants. The returned rows carry
+// treasury_id so the executor can look up the right per-treasury signer.
 export async function findApprovedForExecution(db: Db, limit = 10): Promise<ProposedActionRow[]> {
   return db
     .select()
@@ -280,6 +298,9 @@ export async function getApprovalAttribution(
 // Find pending actions that haven't been posted to Telegram yet. The worker's
 // poller calls this every few seconds; ordering by createdAt is FIFO so older
 // actions don't get starved. `limit` keeps each tick bounded.
+//
+// System-wide: same reason as findApprovedForExecution. Each row carries
+// treasury_id so postApprovalCard can look up the right chat config.
 export async function findPendingForTelegram(db: Db, limit = 25): Promise<ProposedActionRow[]> {
   return db
     .select()
@@ -390,6 +411,11 @@ export interface RecordApprovalResult {
 // peer approver beat us to it, or the row was deleted), `transitionAction`
 // throws `TransitionConflictError` and the whole tx rolls back — including
 // the approval row, which would otherwise lie about which click resolved it.
+//
+// M2: approvals.treasury_id is denormalized from the action's row inside
+// this same tx. The action's treasury_id is read first (FOR UPDATE not
+// strictly needed because the row is uniquely keyed; we don't race with
+// ourselves), then both inserts use it.
 export async function recordApproval(
   db: Db,
   input: RecordApprovalInput,
@@ -397,10 +423,23 @@ export async function recordApproval(
   const targetStatus: ActionStatus = input.decision === 'approve' ? 'approved' : 'denied';
 
   return db.transaction(async (tx) => {
+    // Read the action's treasury_id first so the approvals row can
+    // denormalize it. The transitionActionInTx call below will perform
+    // the actual status flip + its own row read.
+    const [actionRow] = await tx
+      .select({ treasuryId: proposedActions.treasuryId })
+      .from(proposedActions)
+      .where(eq(proposedActions.id, input.actionId))
+      .limit(1);
+    if (!actionRow) {
+      throw new TransitionConflictError(input.actionId, 'pending', null);
+    }
+
     const [approval] = await tx
       .insert(approvals)
       .values({
         actionId: input.actionId,
+        treasuryId: actionRow.treasuryId,
         approverTelegramId: input.approverTelegramId,
         decision: input.decision,
       } satisfies NewApprovalRow)

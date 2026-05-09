@@ -9,13 +9,27 @@ import { z } from 'zod';
 import { createRpcBalanceReader } from './balance';
 import { type ProposeContext, proposeAction } from './propose';
 
-// The AI never sets `kind` (implied by tool name) or wallet fields (always
-// the configured treasury — letting the AI propose them was a hallucination
-// surface; we saw the model fill `So11111…112` from chat hints). The chat
-// route injects ctx.treasuryAddress server-side in execute().
-const DepositInput = DepositActionSchema.omit({ kind: true, sourceWallet: true });
-const WithdrawInput = WithdrawActionSchema.omit({ kind: true, destinationWallet: true });
-const RebalanceInput = RebalanceActionSchema.omit({ kind: true, wallet: true });
+// The AI never sets `kind` (implied by tool name), `treasuryId` (the
+// active treasury — server-injected from the auth/cookie), or wallet
+// fields (always the configured treasury — letting the AI propose them
+// was a hallucination surface; we saw the model fill `So11111…112` from
+// chat hints). The chat route injects ctx.treasuryAddress + ctx.treasuryId
+// server-side in execute().
+const DepositInput = DepositActionSchema.omit({
+  kind: true,
+  treasuryId: true,
+  sourceWallet: true,
+});
+const WithdrawInput = WithdrawActionSchema.omit({
+  kind: true,
+  treasuryId: true,
+  destinationWallet: true,
+});
+const RebalanceInput = RebalanceActionSchema.omit({
+  kind: true,
+  treasuryId: true,
+  wallet: true,
+});
 
 // Inputs to buildTools — the chat route's view, before we derive the
 // downstream ProposeContext (which needs a BalanceReader). Kept separate
@@ -25,6 +39,10 @@ export interface ToolContext {
   modelProvider: string;
   connection: Connection;
   treasuryAddress: PublicKey;
+  // M2: the active treasury's id, server-injected from the auth/cookie.
+  // Threaded into every proposed action so per-treasury policy + velocity
+  // cap apply correctly. The AI never sees or sets this.
+  treasuryId: string;
 }
 
 // Per-request factory: `db` and `ctx` are baked into each tool's execute closure
@@ -45,7 +63,16 @@ export function buildTools(db: Db, ctx: ToolContext) {
         'Propose a USDC deposit into a yield venue (kamino, save). The treasury wallet is configured server-side; do not ask the user for it. Returns the policy decision.',
       inputSchema: DepositInput,
       execute: async (input) =>
-        proposeAction(db, { kind: 'deposit', sourceWallet: treasuryBase58, ...input }, proposeCtx),
+        proposeAction(
+          db,
+          {
+            kind: 'deposit',
+            treasuryId: ctx.treasuryId,
+            sourceWallet: treasuryBase58,
+            ...input,
+          },
+          proposeCtx,
+        ),
     }),
     proposeWithdraw: tool({
       description:
@@ -54,7 +81,12 @@ export function buildTools(db: Db, ctx: ToolContext) {
       execute: async (input) =>
         proposeAction(
           db,
-          { kind: 'withdraw', destinationWallet: treasuryBase58, ...input },
+          {
+            kind: 'withdraw',
+            treasuryId: ctx.treasuryId,
+            destinationWallet: treasuryBase58,
+            ...input,
+          },
           proposeCtx,
         ),
     }),
@@ -63,7 +95,16 @@ export function buildTools(db: Db, ctx: ToolContext) {
         'Propose moving USDC from one yield venue to another (e.g., save → kamino). Allowed venues: kamino, save. The wallet is the configured treasury; do not ask the user for it.',
       inputSchema: RebalanceInput,
       execute: async (input) =>
-        proposeAction(db, { kind: 'rebalance', wallet: treasuryBase58, ...input }, proposeCtx),
+        proposeAction(
+          db,
+          {
+            kind: 'rebalance',
+            treasuryId: ctx.treasuryId,
+            wallet: treasuryBase58,
+            ...input,
+          },
+          proposeCtx,
+        ),
     }),
     getTreasurySnapshot: tool({
       description:

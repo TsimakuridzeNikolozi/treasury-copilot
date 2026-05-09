@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { TEST_TREASURY_ID, ensureTestTreasury } from '../../test/treasury';
 import { TEST_DATABASE_URL } from '../../test/url';
 import * as schema from '../schema';
 import {
@@ -27,6 +28,7 @@ afterAll(async () => {
 const SOURCE = 'So11111111111111111111111111111111111111112';
 const deposit = (amountUsdc: string): ProposedAction => ({
   kind: 'deposit',
+  treasuryId: TEST_TREASURY_ID,
   venue: 'kamino',
   amountUsdc,
   sourceWallet: SOURCE,
@@ -37,6 +39,7 @@ describe.skipIf(SKIP)('queries/actions', () => {
     await db.delete(schema.auditLogs);
     await db.delete(schema.approvals);
     await db.delete(schema.proposedActions);
+    await ensureTestTreasury(db);
   });
 
   describe('insertProposedAction', () => {
@@ -49,6 +52,7 @@ describe.skipIf(SKIP)('queries/actions', () => {
       expect(row.amountUsdc).toBe('500.000000');
       expect(row.venue).toBe('kamino');
       expect(row.policyDecision?.kind).toBe('allow');
+      expect(row.treasuryId).toBe(TEST_TREASURY_ID);
 
       const audits = await db
         .select()
@@ -56,6 +60,9 @@ describe.skipIf(SKIP)('queries/actions', () => {
         .where(eq(schema.auditLogs.actionId, row.id));
       expect(audits).toHaveLength(1);
       expect(audits[0]?.kind).toBe('action_proposed');
+      // M2: audit row carries treasury_id directly so per-treasury history
+      // doesn't have to JOIN through proposed_actions.
+      expect(audits[0]?.treasuryId).toBe(TEST_TREASURY_ID);
     });
 
     it('records requires_approval as status=pending', async () => {
@@ -75,6 +82,7 @@ describe.skipIf(SKIP)('queries/actions', () => {
     it('uses action.venue for withdraw denormalization', async () => {
       const action: ProposedAction = {
         kind: 'withdraw',
+        treasuryId: TEST_TREASURY_ID,
         venue: 'drift',
         amountUsdc: '100',
         destinationWallet: SOURCE,
@@ -88,6 +96,7 @@ describe.skipIf(SKIP)('queries/actions', () => {
     it('uses fromVenue for rebalance denormalization', async () => {
       const action: ProposedAction = {
         kind: 'rebalance',
+        treasuryId: TEST_TREASURY_ID,
         fromVenue: 'kamino',
         toVenue: 'drift',
         amountUsdc: '100',
@@ -188,11 +197,11 @@ describe.skipIf(SKIP)('queries/actions', () => {
     }
 
     it('returns 0 when no allow rows exist in window', async () => {
-      const total = await sumAutoApprovedSince(db, new Date(Date.now() - 60_000));
+      const total = await sumAutoApprovedSince(db, TEST_TREASURY_ID, new Date(Date.now() - 60_000));
       expect(total).toBe('0');
     });
 
-    it('sums only allow-decision rows in the window', async () => {
+    it('sums only allow-decision rows in the window for the treasury', async () => {
       const a1 = deposit('100');
       const a2 = deposit('250.5');
       const a3 = deposit('999');
@@ -203,7 +212,7 @@ describe.skipIf(SKIP)('queries/actions', () => {
       await insert(a3, { kind: 'deny', reason: 'simulated' });
       await insert(a4, { kind: 'requires_approval', reason: 'over threshold' });
 
-      const total = await sumAutoApprovedSince(db, new Date(Date.now() - 60_000));
+      const total = await sumAutoApprovedSince(db, TEST_TREASURY_ID, new Date(Date.now() - 60_000));
       expect(total).toBe('350.500000');
     });
 
@@ -212,8 +221,48 @@ describe.skipIf(SKIP)('queries/actions', () => {
       await insert(a, { kind: 'allow', action: a });
 
       const future = new Date(Date.now() + 60_000);
-      const total = await sumAutoApprovedSince(db, future);
+      const total = await sumAutoApprovedSince(db, TEST_TREASURY_ID, future);
       expect(total).toBe('0');
+    });
+
+    it('does not bleed across treasuries', async () => {
+      // Insert another test treasury and an allow action against it; the
+      // treasury under test should not see those amounts.
+      const otherId = '00000000-0000-4000-8000-000000000099';
+      await db
+        .insert(schema.treasuries)
+        .values({
+          id: otherId,
+          name: 'Other Treasury',
+          walletAddress: 'So22222222222222222222222222222222222222222',
+          turnkeySubOrgId: 'test-suborg-other',
+          turnkeyWalletId: null,
+          signerBackend: 'local',
+          telegramChatId: null,
+          telegramApproverIds: [],
+          createdBy: null,
+        })
+        .onConflictDoNothing();
+      const otherDeposit: ProposedAction = {
+        kind: 'deposit',
+        treasuryId: otherId,
+        venue: 'kamino',
+        amountUsdc: '500',
+        sourceWallet: SOURCE,
+      };
+      await insert(otherDeposit, { kind: 'allow', action: otherDeposit });
+
+      const ownDeposit = deposit('100');
+      await insert(ownDeposit, { kind: 'allow', action: ownDeposit });
+
+      const ownTotal = await sumAutoApprovedSince(
+        db,
+        TEST_TREASURY_ID,
+        new Date(Date.now() - 60_000),
+      );
+      expect(ownTotal).toBe('100.000000');
+      const otherTotal = await sumAutoApprovedSince(db, otherId, new Date(Date.now() - 60_000));
+      expect(otherTotal).toBe('500.000000');
     });
   });
 });

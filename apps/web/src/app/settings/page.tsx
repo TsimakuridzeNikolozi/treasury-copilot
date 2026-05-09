@@ -1,5 +1,6 @@
 import { AppNav } from '@/components/app-nav';
 import { PolicyForm } from '@/components/policy-form';
+import { env } from '@/env';
 import { db } from '@/lib/db';
 import { PRIVY_COOKIE, privy } from '@/lib/privy';
 import { getPolicy, getPolicyMeta } from '@tc/db';
@@ -21,7 +22,17 @@ export default async function SettingsPage() {
     redirect('/?next=/settings');
   }
 
-  const [policy, meta] = await Promise.all([getPolicy(db), getPolicyMeta(db)]);
+  // M2 PR 1: read the seed treasury's policy until PR 2 ships
+  // membership-aware lookup via the active-treasury cookie.
+  // TODO(2-PR2): replace env.SEED_TREASURY_ID with the active treasury id
+  // resolved by getActiveTreasuryAndRole + requireMembership. Without
+  // that, any authenticated Privy user can read this page; safe today
+  // (only the seed treasury exists) but a cross-tenant access bug the
+  // moment PR 2 lets users provision their own treasuries.
+  const [policy, meta] = await Promise.all([
+    getPolicy(db, env.SEED_TREASURY_ID),
+    getPolicyMeta(db, env.SEED_TREASURY_ID),
+  ]);
   // RSC → client serialization: Date works through Flight, but ISO strings
   // are easier for the form to format predictably and don't require dealing
   // with timezone surprises on rehydration.

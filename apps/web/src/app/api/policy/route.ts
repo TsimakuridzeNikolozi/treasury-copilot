@@ -1,3 +1,4 @@
+import { env } from '@/env';
 import { db } from '@/lib/db';
 import { verifyBearer } from '@/lib/privy';
 import { getPolicy, upsertPolicy } from '@tc/db';
@@ -42,7 +43,12 @@ const PolicyPatch = z
 export async function GET(req: Request) {
   const auth = await verifyBearer(req);
   if (!auth) return new Response('unauthorized', { status: 401 });
-  const policy = await getPolicy(db);
+  // M2 PR 1: read the seed treasury's policy until PR 2 swaps in
+  // membership-aware lookup via the active-treasury cookie.
+  // TODO(2-PR2): replace env.SEED_TREASURY_ID with
+  // getActiveTreasuryAndRole + requireMembership. Same authorization
+  // gap as /settings — any logged-in Privy user can hit this today.
+  const policy = await getPolicy(db, env.SEED_TREASURY_ID);
   return Response.json(policy);
 }
 
@@ -56,6 +62,13 @@ export async function PATCH(req: Request) {
     return Response.json({ error: parsed.error.flatten().fieldErrors }, { status: 400 });
   }
 
-  await upsertPolicy(db, { policy: parsed.data, updatedBy: auth.userId });
+  // TODO(2-PR2): replace env.SEED_TREASURY_ID with the active treasury id
+  // + owner-role enforcement (only owners can mutate policy). PR 1 is safe
+  // because the seed is the only treasury; PR 2 must gate this PATCH.
+  await upsertPolicy(db, {
+    treasuryId: env.SEED_TREASURY_ID,
+    policy: parsed.data,
+    updatedBy: auth.userId,
+  });
   return new Response(null, { status: 204 });
 }

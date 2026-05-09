@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { TEST_TREASURY_ID, ensureTestTreasury } from '../test/treasury';
 import { TEST_DATABASE_URL } from '../test/url';
 import * as schema from './schema';
 
@@ -22,11 +23,13 @@ describe.skipIf(SKIP)('schema', () => {
     await db.delete(schema.auditLogs);
     await db.delete(schema.approvals);
     await db.delete(schema.proposedActions);
+    await ensureTestTreasury(db);
   });
 
   it('inserts and reads a proposed_actions row with typed payload', async () => {
     const payload: ProposedAction = {
       kind: 'deposit',
+      treasuryId: TEST_TREASURY_ID,
       venue: 'kamino',
       amountUsdc: '1000.000000',
       sourceWallet: 'So11111111111111111111111111111111111111112',
@@ -35,6 +38,7 @@ describe.skipIf(SKIP)('schema', () => {
     const [row] = await db
       .insert(schema.proposedActions)
       .values({
+        treasuryId: TEST_TREASURY_ID,
         payload,
         amountUsdc: '1000.000000',
         venue: 'kamino',
@@ -49,11 +53,13 @@ describe.skipIf(SKIP)('schema', () => {
       expect(row.payload.venue).toBe('kamino');
     }
     expect(row?.amountUsdc).toBe('1000.000000');
+    expect(row?.treasuryId).toBe(TEST_TREASURY_ID);
   });
 
   it('cascades approvals on action delete and nulls audit_logs.action_id', async () => {
     const payload: ProposedAction = {
       kind: 'rebalance',
+      treasuryId: TEST_TREASURY_ID,
       fromVenue: 'kamino',
       toVenue: 'drift',
       amountUsdc: '500.000000',
@@ -63,6 +69,7 @@ describe.skipIf(SKIP)('schema', () => {
     const [action] = await db
       .insert(schema.proposedActions)
       .values({
+        treasuryId: TEST_TREASURY_ID,
         payload,
         amountUsdc: '500.000000',
         venue: 'kamino',
@@ -73,6 +80,7 @@ describe.skipIf(SKIP)('schema', () => {
 
     await db.insert(schema.approvals).values({
       actionId: action.id,
+      treasuryId: TEST_TREASURY_ID,
       approverTelegramId: '12345',
       decision: 'approve',
     });
@@ -82,6 +90,7 @@ describe.skipIf(SKIP)('schema', () => {
       .values({
         kind: 'action_proposed',
         actionId: action.id,
+        treasuryId: TEST_TREASURY_ID,
         actor: 'agent',
         payload: { note: 'smoke test' },
       })
