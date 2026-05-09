@@ -50,7 +50,8 @@ CREATE TABLE "treasury_memberships" (
 	"user_id" uuid NOT NULL,
 	"role" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "treasury_memberships_treasury_id_user_id_pk" PRIMARY KEY("treasury_id","user_id")
+	CONSTRAINT "treasury_memberships_treasury_id_user_id_pk" PRIMARY KEY("treasury_id","user_id"),
+	CONSTRAINT "treasury_memberships_role_chk" CHECK ("treasury_memberships"."role" = 'owner')
 );
 --> statement-breakpoint
 ALTER TABLE "treasury_memberships" ADD CONSTRAINT "treasury_memberships_treasury_id_treasuries_id_fk" FOREIGN KEY ("treasury_id") REFERENCES "public"."treasuries"("id") ON DELETE cascade ON UPDATE no action;

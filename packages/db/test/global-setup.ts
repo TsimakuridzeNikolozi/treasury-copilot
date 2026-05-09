@@ -15,8 +15,13 @@ export default async function globalSetup() {
 
   const url = new URL(TEST_DATABASE_URL);
   const dbName = url.pathname.slice(1);
-  if (!dbName)
-    throw new Error(`TEST_DATABASE_URL is missing a database name: ${TEST_DATABASE_URL}`);
+  if (!dbName) {
+    // Don't include the URL itself — it carries `user:password@host` and
+    // would leak credentials into stderr / CI logs.
+    throw new Error(
+      `TEST_DATABASE_URL is missing a database name (host: ${url.host || 'unknown'})`,
+    );
+  }
 
   const adminUrl = new URL(TEST_DATABASE_URL);
   adminUrl.pathname = '/postgres';
@@ -55,23 +60,42 @@ export default async function globalSetup() {
       await migrate(db, {
         migrationsFolder: resolve(here, '../drizzle'),
       });
-      // Test DB cleanup before the structural flips: any pre-existing
-      // M1 rows would block the NOT NULL flip on
-      // proposed_actions.treasury_id since they were written before the
-      // column existed. Tests don't care about historical M1 data
-      // (every suite's beforeEach truncates anyway), so we wipe the
-      // tables here to let the flips apply on a clean slate.
-      // Idempotent: TRUNCATE on already-empty tables is fine.
-      await migrationClient`TRUNCATE TABLE audit_logs, approvals, proposed_actions, policies CASCADE`;
-      // Migration B equivalent — see comment in scripts/m2-structural-flips.ts.
-      // Idempotent so re-runs are safe.
-      await applyM2StructuralFlips(db);
+      // The TRUNCATE + structural flips below are one-shot setup, not
+      // per-run cleanup. Once the flips have been applied (signal: the
+      // legacy `policies.id` column is gone), a second package's
+      // globalSetup running while the first package's tests are mid-run
+      // would otherwise wipe rows the running tests depend on. Skip both
+      // steps in that case — the flips are idempotent so re-running is
+      // technically safe, but the TRUNCATE is the destructive part.
+      const flipsAlreadyApplied = await policiesIdDropped(migrationClient);
+      if (!flipsAlreadyApplied) {
+        // Pre-existing M1 rows would block the NOT NULL flip on
+        // proposed_actions.treasury_id since they were written before
+        // the column existed. Tests don't care about historical M1 data
+        // (every suite's beforeEach truncates anyway), so we wipe the
+        // tables here to let the flips apply on a clean slate. Only
+        // happens on the very first package to win the lock — once the
+        // flips run, the column is gone and we skip this branch forever.
+        await migrationClient`TRUNCATE TABLE audit_logs, approvals, proposed_actions, policies CASCADE`;
+        // Migration B equivalent — see scripts/m2-structural-flips.ts.
+        await applyM2StructuralFlips(db);
+      }
     } finally {
       await migrationClient`SELECT pg_advisory_unlock(${MIGRATION_LOCK_KEY})`;
     }
   } finally {
     await migrationClient.end();
   }
+}
+
+// Sentinel for "M2 structural flips already ran": the legacy `policies.id`
+// column is dropped by applyM2StructuralFlips and never re-added.
+async function policiesIdDropped(client: postgres.Sql): Promise<boolean> {
+  const rows = await client`
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'policies' AND column_name = 'id'
+  `;
+  return rows.length === 0;
 }
 
 const MIGRATION_LOCK_KEY = 8527431902;

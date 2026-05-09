@@ -107,6 +107,11 @@ export const treasuryMemberships = pgTable(
     // (user_id, treasury_id) composite for the "list my treasuries" query.
     // The PK above gives the (treasury_id, user_id) lookup direction.
     index('treasury_memberships_user_treasury_idx').on(t.userId, t.treasuryId),
+    // The text-column `enum` option above is TS-only — drizzle does not
+    // emit a DB CHECK for it. Enforce 'owner' at the DB layer too so a
+    // direct SQL write can't sneak in a future role value before the M3
+    // migration adds 'approver' / 'viewer'. M3 drops this check.
+    check('treasury_memberships_role_chk', sql`${t.role} = 'owner'`),
   ],
 );
 
