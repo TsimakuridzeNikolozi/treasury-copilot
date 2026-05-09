@@ -95,7 +95,7 @@ export default function ChatPage() {
           <ConversationContent>
             {messages.length === 0 ? (
               <ConversationEmptyState
-                description='Try: "deposit 500 USDC into Kamino from So111…"'
+                description='Try: "show my positions" or "rebalance 0.5 USDC from save to kamino"'
                 icon={<CoinsIcon className="size-8" />}
                 title="No messages yet"
               />
@@ -145,7 +145,7 @@ export default function ChatPage() {
 
         <div className="border-t p-4">
           <PromptInput onSubmit={onSubmit}>
-            <PromptInputTextarea placeholder='e.g. "rebalance 2000 USDC from kamino to drift"' />
+            <PromptInputTextarea placeholder='e.g. "rebalance 0.5 USDC from save to kamino"' />
             <PromptInputFooter>
               <span className="text-muted-foreground text-xs">
                 Actions are gated by policy. No funds move without execution.

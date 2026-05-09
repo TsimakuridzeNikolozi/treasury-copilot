@@ -1,0 +1,2 @@
+ALTER TABLE "proposed_actions" ADD COLUMN "rebalance_intermediate_signature" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "proposed_actions_rebalance_intermediate_signature_uq" ON "proposed_actions" USING btree ("rebalance_intermediate_signature") WHERE "proposed_actions"."rebalance_intermediate_signature" IS NOT NULL;
