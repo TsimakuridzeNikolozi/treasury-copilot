@@ -1,30 +1,140 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
+import type { BootstrapResponse } from '@/lib/api-types';
 import { useLogin, usePrivy } from '@privy-io/react-auth';
-import { ArrowRightIcon, CoinsIcon, ShieldCheckIcon, SparklesIcon } from 'lucide-react';
+import {
+  ArrowRightIcon,
+  CoinsIcon,
+  Loader2Icon,
+  ShieldCheckIcon,
+  SparklesIcon,
+} from 'lucide-react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useEffect } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 
+type BootstrapState =
+  | { kind: 'idle' }
+  | { kind: 'in_flight'; created: boolean }
+  | { kind: 'error'; status: number; message: string };
+
+// `useSearchParams()` forces a CSR bailout in Next 15 — to avoid a
+// build-time error the read must sit inside a Suspense boundary. We
+// keep the Suspense thin (just the inner page body) so the static
+// chrome above it still prerenders.
 export default function HomePage() {
+  return (
+    <Suspense fallback={null}>
+      <HomePageInner />
+    </Suspense>
+  );
+}
+
+function HomePageInner() {
   const { authenticated, ready, logout, user } = usePrivy();
   const { login } = useLogin();
+  const { getAccessToken } = usePrivy();
   const router = useRouter();
   const params = useSearchParams();
   const next = params.get('next');
 
+  const [bootstrap, setBootstrap] = useState<BootstrapState>({ kind: 'idle' });
+  // useRef instead of state so React 18 strict-mode's effect double-fire
+  // doesn't fire two simultaneous bootstrap requests in dev.
+  const inFlightRef = useRef(false);
+
+  // Drive the bootstrap when authentication settles. We POST through to
+  // /api/me/bootstrap once per session; the route is idempotent (the
+  // session-scoped advisory lock + post-lock count check make duplicate
+  // requests a no-op), but firing it just once keeps logs and Privy
+  // rate limits clean.
   useEffect(() => {
     if (!ready || !authenticated) return;
-    const safe = sanitizeNextPath(next);
-    if (safe) router.replace(safe);
-  }, [ready, authenticated, next, router]);
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
 
-  // Match AppNav's logout: await Privy's session teardown so the cookie is
-  // actually gone, then clear any `?next=` from the URL so a subsequent sign
-  // in doesn't bounce to a previously requested gated page.
+    // Two distinct flows hit this effect:
+    //   1. Fresh signup / deep-link bounce — Privy redirected here and
+    //      we want to forward the user onward (to `next` if set, or
+    //      `/chat` for new accounts).
+    //   2. Returning user manually clicking the home logo — they want
+    //      to *be* on `/` and see the SignedInPanel.
+    // We tell them apart by `(a)` whether `?next=...` was set on the URL
+    // (middleware bounces), or `(b)` whether bootstrap actually created
+    // something this call (first signup). Otherwise: stay put.
+    const safeNext = sanitizeNextPath(next);
+
+    // Optimistic: assume created=false (no spinner copy). The route
+    // returns quickly when memberships already exist; we flip the
+    // descriptive copy on once we see created=true. 200ms delay so the
+    // spinner doesn't flash during instant short-circuits.
+    let copyTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+      setBootstrap({ kind: 'in_flight', created: true });
+    }, 200);
+
+    (async () => {
+      try {
+        const token = await getAccessToken();
+        const res = await fetch('/api/me/bootstrap', {
+          method: 'POST',
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (copyTimer) {
+          clearTimeout(copyTimer);
+          copyTimer = null;
+        }
+        if (!res.ok) {
+          const text = await res.text();
+          setBootstrap({
+            kind: 'error',
+            status: res.status,
+            message: text || `${res.status} ${res.statusText}`,
+          });
+          inFlightRef.current = false;
+          return;
+        }
+        const body = (await res.json()) as BootstrapResponse;
+        const shouldRedirect = body.created || safeNext !== null;
+        if (shouldRedirect) {
+          // First-timer's spinner stays up across the redirect.
+          // router.replace (not push) so they can't back-button into it.
+          if (body.created) setBootstrap({ kind: 'in_flight', created: true });
+          router.replace(safeNext ?? '/chat');
+        } else {
+          // Returning user, manual visit — show the SignedInPanel and
+          // let them choose where to go.
+          setBootstrap({ kind: 'idle' });
+        }
+      } catch (err) {
+        if (copyTimer) {
+          clearTimeout(copyTimer);
+          copyTimer = null;
+        }
+        setBootstrap({
+          kind: 'error',
+          status: 0,
+          message: err instanceof Error ? err.message : String(err),
+        });
+        inFlightRef.current = false;
+      }
+    })();
+
+    return () => {
+      if (copyTimer) clearTimeout(copyTimer);
+    };
+  }, [ready, authenticated, next, getAccessToken, router]);
+
+  const onRetry = () => {
+    inFlightRef.current = false;
+    setBootstrap({ kind: 'idle' });
+  };
+
+  // Sign-out: clear our active-treasury cookie in parallel with Privy's
+  // session teardown so the next user on a shared browser doesn't
+  // inherit the previous user's selection.
   const onSignOut = async () => {
-    await logout();
+    await Promise.allSettled([logout(), fetch('/api/auth/logout', { method: 'POST' })]);
     router.replace('/');
   };
 
@@ -53,6 +163,10 @@ export default function HomePage() {
 
       {!ready ? (
         <LoadingShell />
+      ) : authenticated && bootstrap.kind === 'in_flight' ? (
+        <BootstrappingPanel created={bootstrap.created} />
+      ) : authenticated && bootstrap.kind === 'error' ? (
+        <BootstrapErrorPanel state={bootstrap} onRetry={onRetry} onSignOut={onSignOut} />
       ) : authenticated ? (
         <SignedInPanel
           email={user?.email?.address ?? null}
@@ -88,6 +202,53 @@ function SignInPanel({ onSignIn }: { onSignIn: () => void }) {
       <p className="text-muted-foreground text-xs">
         Email OTP via Privy. No password, no wallet linking required.
       </p>
+    </div>
+  );
+}
+
+function BootstrappingPanel({ created }: { created: boolean }) {
+  return (
+    <div className="flex flex-col items-center gap-3 text-center" aria-live="polite" aria-busy>
+      <Loader2Icon className="size-8 animate-spin text-muted-foreground" aria-hidden />
+      <div className="flex flex-col gap-1">
+        <p className="font-medium text-sm">Setting up your treasury…</p>
+        {created && (
+          <p className="max-w-xs text-muted-foreground text-xs">
+            This takes a few seconds — we're creating a hardware-secured wallet for you.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BootstrapErrorPanel({
+  state,
+  onRetry,
+  onSignOut,
+}: {
+  state: { kind: 'error'; status: number; message: string };
+  onRetry: () => void;
+  onSignOut: () => void;
+}) {
+  // 502 is Turnkey-unavailable territory; surface the raw message so an
+  // operator chasing a staging outage gets the signal in the browser
+  // console / a11y reader. Anything else: generic copy.
+  const detail =
+    state.status === 502
+      ? state.message
+      : 'We hit a snag setting up your treasury. Please try again.';
+  return (
+    <div className="flex flex-col items-center gap-3 text-center">
+      <p className="text-destructive text-sm">{detail}</p>
+      <div className="flex gap-2">
+        <Button size="sm" onClick={onRetry}>
+          Retry
+        </Button>
+        <Button size="sm" variant="outline" onClick={onSignOut}>
+          Sign out
+        </Button>
+      </div>
     </div>
   );
 }
@@ -156,7 +317,7 @@ function FeatureRow() {
 // (anyone can craft a `/?next=https://evil.com` link). router.replace will
 // happily navigate off-origin if handed an absolute URL, so reject anything
 // that doesn't look like a same-origin relative path. Returns null when the
-// param is missing or unsafe — caller stays on `/`.
+// param is missing or unsafe — caller falls back to /chat.
 function sanitizeNextPath(next: string | null): string | null {
   if (!next) return null;
   // Must start with `/` (relative) but not `//` (protocol-relative URLs like

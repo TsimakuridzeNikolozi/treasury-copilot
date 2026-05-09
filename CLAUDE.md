@@ -51,10 +51,27 @@ After pulling PR 1, every existing checkout needs:
 ```bash
 pnpm db:migrate         # applies 0006 — adds users/treasuries/treasury_memberships + nullable treasury_id columns
 pnpm db:seed-m2         # inserts seed treasury, backfills, applies the M2 structural flips
-# copy the printed SEED_TREASURY_ID=<uuid> into apps/web/.env.local
+# copy the printed SEED_TREASURY_ID=<uuid> into BOTH apps/web/.env.local AND apps/worker/.env
 ```
 
 The seed script auto-loads `apps/web/.env.local` and `apps/worker/.env` (already-set shell vars take precedence), so no `set -a; source …` is needed. It is idempotent — safe to re-run. Why no Migration B SQL in the journal: drizzle-orm's migrator wraps all pending migrations in a single transaction, so a NOT NULL flip on `proposed_actions.treasury_id` would roll Migration A back atomically when M1 rows still exist. Inlining the flips into the seed script (after backfill) sidesteps that.
+
+### M2 PR 2 env additions
+
+PR 2 adds `SIGNER_BACKEND` (mirrors the worker) and three optional `TURNKEY_PARENT_*` vars to web env, plus `SEED_TREASURY_ID` to worker env:
+
+```bash
+# apps/web/.env.local — required when SIGNER_BACKEND=turnkey
+SIGNER_BACKEND=local            # or turnkey
+TURNKEY_PARENT_ORG_ID=…         # parent org UUID (only for turnkey mode)
+TURNKEY_PARENT_API_PUBLIC_KEY=… # P-256 hex (66 chars; leading 0x tolerated)
+TURNKEY_PARENT_API_PRIVATE_KEY=… # P-256 hex (64 chars)
+
+# apps/worker/.env — required for the PR 2 transition guard
+SEED_TREASURY_ID=…              # same UUID as web; printed by db:seed-m2
+```
+
+The web env enforces the cross-field rule "all three TURNKEY_PARENT_* are required when SIGNER_BACKEND=turnkey" via a Zod refinement at module load. PR 3 removes `SEED_TREASURY_ID` from worker env; PR 4 removes it from web env.
 
 ## Architecture
 
@@ -84,9 +101,25 @@ Both implement an internal `TreasurySigner` interface (`packages/signer/src/type
 
 ### Auth + settings
 
-The web app gates `/chat` and `/settings` (and their API routes) behind Privy login. `apps/web/src/middleware.ts` does a soft cookie-presence check; strict JWT verification (`PrivyClient.verifyAuthToken`) lives in route handlers and the settings server page via `verifyBearer` / `privy.verifyAuthToken` from `apps/web/src/lib/privy.ts`. The chat client sends the access token as `Authorization: Bearer <jwt>` via the function-form `headers` on `DefaultChatTransport`, which the SDK calls per-request so token rotation is transparent. The user's stable Privy DID is recorded as `proposed_by` on each action.
+The web app gates `/chat`, `/settings`, and `/api/me/bootstrap` / `/api/treasury/*` / `/api/auth/logout` behind Privy login. `apps/web/src/middleware.ts` does a soft cookie-presence check; strict JWT verification (`PrivyClient.verifyAuthToken`) lives in route handlers and the chat / settings server pages via `verifyBearer` / `privy.verifyAuthToken` from `apps/web/src/lib/privy.ts`. The chat client sends the access token as `Authorization: Bearer <jwt>` via the function-form `headers` on `DefaultChatTransport`, which the SDK calls per-request so token rotation is transparent. The user's stable Privy DID is recorded as `proposed_by` on each action.
 
-Policy is no longer hard-coded: the singleton `policies` row (`packages/db/src/schema/index.ts`, CHECK-constrained to `id='default'`) is the source of truth, edited via `/settings`. `getPolicy(db)` falls back to `DEFAULT_POLICY` (still in `@tc/policy`) when the row is missing. Edits land via `PATCH /api/policy` and are atomically logged in `audit_logs` with kind `'policy_updated'` (`audit_logs.kind` is plain text, not an enum — new kinds are string literals at the call site). M2 drops the singleton CHECK and re-keys the table on `treasury_id`.
+### Multi-tenancy + bootstrap
+
+`policies` is now keyed per `treasury_id` (the M1 singleton CHECK was dropped in M2 PR 1). Each Privy user gets their own `users` row + their own treasury at first sign-in:
+
+- **Active treasury cookie.** `tc_active_treasury` (HttpOnly, Secure, SameSite=Lax, Path=/) carries the user's selection across requests. Every gated route re-validates membership via `resolveActiveTreasury` (`apps/web/src/lib/active-treasury.ts`) — present-but-invalid cookies fall back to the user's first remaining membership and re-set the cookie; users with zero memberships get redirected to `/` for onboarding. The constant lives in `apps/web/src/lib/active-treasury-cookie.ts` so middleware (Edge runtime) can reference it without dragging in DB code.
+- **Bootstrap** (`POST /api/me/bootstrap`). Three-stage flow under a session-scoped `pg_advisory_lock(hashtext(privyDid))` on a reserved postgres-js connection. Stage 1 (own tx) — `bootstrapUserCore` upsert + post-lock membership count; if memberships > 0, short-circuit with `created: false`. Stage 2 (no tx, lock still held) — `provisionTreasury` from `@tc/turnkey-admin` mints a per-user Turnkey sub-org + Solana wallet (skipped in `local` mode, where users attach to the seed treasury). Stage 3 (own tx) — `createTreasury` + `addMembership('owner')` + `audit_logs` row (`treasury_created` in turnkey mode, `membership_added` in local mode). The session lock survives the Turnkey API call so two concurrent bootstraps from the same DID serialize cleanly — exactly one Turnkey call, exactly one treasury row. **Don't take the lock with `pg_advisory_xact_lock`**; the existing tx-scoped lock inside `bootstrapUser` only serializes the upsert and would let stages 2+3 race. That's why the route calls `bootstrapUserCore` directly.
+- **Owner-only RBAC.** `treasury_memberships.role` CHECK is `'owner'` only in M2; M3 lifts the constraint when invitations land. Every gated route still enforces `role === 'owner'` to keep PR-3+ role expansion from having to revisit each route.
+- **Body-vs-cookie 409 multi-tab safety.** Chat and policy PATCH requests carry `treasuryId` in the body; mismatch with the resolved active treasury returns 409 `active_treasury_changed`, and the client force-reloads to re-render against the new id. `no_active_treasury` 409 (mid-bootstrap or revoked-membership) sends the client to `/`.
+- **Logout cookie clear.** `POST /api/auth/logout` clears `tc_active_treasury` so user A's selection doesn't leak to user B on the same browser. Safe to call unauthenticated because the cookie is `SameSite=Lax`. Bearer-auth on every other new route is CSRF-immune by virtue of using a header rather than a cookie.
+
+#### M2 PR 2 transition state
+
+The web app is fully multi-tenant; the worker still routes all execution through the seed signer. A temporary guard in `apps/worker/src/executor.ts` (search `TODO(2-PR3)`) fail-fasts any action whose `treasury_id` isn't `SEED_TREASURY_ID` with reason `'signer not yet wired for treasury'`. PR 3 deletes this guard the same hour the per-treasury signer factory ships.
+
+**Stage-3 bootstrap failure (operator reconcile).** If stage 3's tx throws after Turnkey already returned a sub-org (turnkey mode), the route 500s and logs `orphaned subOrgId=…`. Operator drops the sub-org via the Turnkey console, user retries bootstrap. With the session lock in place this is the *only* orphan path; M3 adds an automatic reconciler.
+
+Policy lookup remains `getPolicy(db, treasuryId)` (`packages/db/src/queries/policies.ts`); falls back to `DEFAULT_POLICY` (still in `@tc/policy`) when the row is missing. Edits land via `PATCH /api/policy` and are atomically logged in `audit_logs` with kind `'policy_updated'` (`audit_logs.kind` is plain text, not an enum — new kinds are string literals at the call site).
 
 ### AI provider abstraction
 
@@ -97,10 +130,11 @@ The orchestration helper `proposeAction(db, action, ctx)` lives in `@tc/agent-to
 ### Workspace dependency direction (no cycles by construction)
 
 ```
-apps/web      → env, types, db, policy, agent-tools, protocols
+apps/web      → env, types, db, policy, agent-tools, protocols, turnkey-admin
 apps/worker   → env, types, db, policy, signer
 agent-tools   → types, policy, signer, protocols, db
 signer        → types, policy, protocols
+turnkey-admin → (leaf)            ← web-only; never imported from apps/worker
 policy        → types
 protocols     → types
 db            → types, policy
@@ -150,7 +184,9 @@ Biome only. **Do not add ESLint or Prettier.** Run `pnpm exec biome check --writ
 
 These are first-feature work, not setup. When asked to "add X", check this list — if it's here, the answer is "yes, that's phase-1 work, not a config tweak":
 
-- Multi-tenant: there's a single global `policies` row keyed `id='default'` and one configured treasury wallet. M2 adds `users`/`treasuries`/`treasury_memberships` tables, RBAC, and per-user Turnkey sub-orgs.
+- Per-treasury signer factory in the worker. PR 2 ships per-user Turnkey sub-orgs but the worker still signs through the seed wallet (with the `TODO(2-PR3)` guard in `executor.ts` fail-fasting non-seed actions). PR 3 wires an LRU per-treasury signer and removes the guard; PR 3 also drops the chat-id allowlist in `bot.ts` and adds per-treasury Telegram routing + `/api/treasury/telegram-config`.
+- Drop `TREASURY_PUBKEY_BASE58` from web env, `SEED_TREASURY_ID` from web env, legacy `TELEGRAM_*` from worker — **PR 4**, after PR 3 lands.
+- Multi-user-per-treasury, invitations, role expansion beyond `owner`, treasury rename / delete UX, Privy webhook for user-deleted lifecycle, automatic reconciler for stage-3 bootstrap failure, bootstrap rate limiting (Upstash/Redis-backed) — **M3**.
 - Protocol SDK coverage in `packages/protocols`: Kamino and Save are wired end-to-end (deposit + withdraw); Drift and Marginfi builders are still stubs
 - Telegram bot client (grammy) in `apps/worker/src/bot.ts`
 - CI workflows (`.github/workflows/`)

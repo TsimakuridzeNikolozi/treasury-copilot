@@ -1,5 +1,5 @@
 import { and, eq } from 'drizzle-orm';
-import type { Db } from '../client';
+import type { Db, DbOrTx } from '../client';
 import {
   type TreasuryMembershipRow,
   type TreasuryRow,
@@ -18,7 +18,7 @@ export interface AddMembershipInput {
 }
 
 export async function addMembership(
-  db: Db,
+  db: DbOrTx,
   input: AddMembershipInput,
 ): Promise<TreasuryMembershipRow> {
   const [row] = await db

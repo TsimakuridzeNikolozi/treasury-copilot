@@ -87,12 +87,31 @@ export const signerSignTimeoutMsSchema = z.coerce.number().int().positive().defa
 export const privyAppSecretSchema = z.string().min(1).describe('Privy app secret');
 
 // Seed treasury id (uuid). Written to `apps/web/.env.local` by the M2 seed
-// script (db:seed-m2) — chat/policy/settings routes read this until PR 2
-// ships membership-aware lookup via the active-treasury cookie. Validating
-// as uuid here so the operator catches typos at boot rather than at first
-// query. Removed from web env in PR 4 once getActiveTreasuryAndRole is
-// the single source of truth.
+// script (db:seed-m2). After PR 2 the only remaining web consumer is the
+// local-mode bootstrap stage 3 (which attaches new dev users to the seed
+// treasury); the worker holds it for the temporary executor guard until
+// PR 3 ships the per-treasury signer factory. Removed from worker env in
+// PR 3, from web env in PR 4. Validating as uuid here so the operator
+// catches typos at boot rather than at first query.
 export const seedTreasuryIdSchema = z
   .string()
   .uuid()
   .describe('M2 seed treasury id — written by db:seed-m2');
+
+// Parent-org Turnkey admin credentials. Used by @tc/turnkey-admin to mint
+// per-user sub-orgs and Solana wallets at first sign-in. Server-only.
+// Required at runtime when SIGNER_BACKEND=turnkey (web env validates that
+// refinement); optional when local because dev clones never call Turnkey.
+//
+// The same hex schemas as the per-org turnkey* schemas (P-256 ECDSA) — see
+// turnkeyApiPublicKeySchema for the full why. Re-exported under distinct
+// names so the parent-vs-runtime distinction is visible at the call site.
+export const turnkeyParentApiPublicKeySchema = turnkeyApiPublicKeySchema.describe(
+  'Parent-org admin API public key (P-256). Used to mint sub-orgs.',
+);
+export const turnkeyParentApiPrivateKeySchema = turnkeyApiPrivateKeySchema.describe(
+  'Parent-org admin API private key (P-256). Server-only.',
+);
+export const turnkeyParentOrganizationIdSchema = turnkeyOrganizationIdSchema.describe(
+  'Parent organization UUID — sub-orgs are created underneath it.',
+);

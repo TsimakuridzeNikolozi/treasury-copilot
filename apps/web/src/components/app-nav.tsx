@@ -1,5 +1,6 @@
 'use client';
 
+import { TreasurySwitcher } from '@/components/treasury-switcher';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -20,7 +21,15 @@ const NAV_LINKS = [
   { href: '/settings', label: 'Settings', icon: SettingsIcon },
 ] as const;
 
-export function AppNav() {
+interface AppNavProps {
+  // Forwarded to TreasurySwitcher so the dropdown can highlight the
+  // current row. Optional: when undefined the switcher fetches the list
+  // and uses [0] as a fallback. Server pages know it; the resulting
+  // prop chain keeps the switcher read consistent.
+  activeTreasuryId?: string;
+}
+
+export function AppNav({ activeTreasuryId }: AppNavProps = {}) {
   const pathname = usePathname();
   const router = useRouter();
   const { user, logout, ready } = usePrivy();
@@ -30,25 +39,32 @@ export function AppNav() {
   const shortId = user?.id ? `…${user.id.slice(-6)}` : null;
 
   const onSignOut = async () => {
-    await logout();
+    // Clear our active-treasury cookie in parallel with Privy's session
+    // teardown so user A's selection doesn't leak to user B on the same
+    // browser. The /api/auth/logout call is fire-and-forget — the cookie
+    // clear is idempotent and a network blip can't make it harmful.
+    await Promise.allSettled([logout(), fetch('/api/auth/logout', { method: 'POST' })]);
     router.replace('/');
   };
 
   return (
     <header className="sticky top-0 z-30 border-b bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="mx-auto flex h-14 max-w-5xl items-center justify-between gap-3 px-4 sm:px-6">
-        <Link
-          href="/"
-          className="flex items-center gap-2 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-        >
-          <span
-            aria-hidden
-            className="flex size-7 items-center justify-center rounded-md bg-foreground text-background"
+        <div className="flex items-center gap-3">
+          <Link
+            href="/"
+            className="flex items-center gap-2 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           >
-            <CoinsIcon className="size-4" />
-          </span>
-          <span className="font-semibold text-sm tracking-tight">Treasury Copilot</span>
-        </Link>
+            <span
+              aria-hidden
+              className="flex size-7 items-center justify-center rounded-md bg-foreground text-background"
+            >
+              <CoinsIcon className="size-4" />
+            </span>
+            <span className="font-semibold text-sm tracking-tight">Treasury Copilot</span>
+          </Link>
+          <TreasurySwitcher activeTreasuryId={activeTreasuryId} />
+        </div>
 
         <nav className="flex items-center gap-1" aria-label="Main">
           {NAV_LINKS.map(({ href, label, icon: Icon }) => {

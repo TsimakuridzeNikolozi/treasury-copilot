@@ -44,7 +44,11 @@ function venuesEqual(a: readonly Venue[], b: readonly Venue[]): boolean {
   return [...a].sort().join(',') === [...b].sort().join(',');
 }
 
-export function PolicyForm({ initial, meta }: { initial: Policy; meta: PolicyFormMeta }) {
+export function PolicyForm({
+  initial,
+  meta,
+  treasuryId,
+}: { initial: Policy; meta: PolicyFormMeta; treasuryId: string }) {
   const { getAccessToken } = usePrivy();
 
   // The form has TWO sources of truth that look similar but mean different
@@ -121,8 +125,21 @@ export function PolicyForm({ initial, meta }: { initial: Policy; meta: PolicyFor
           maxSingleActionUsdc: state.maxSingleActionUsdc,
           maxAutoApprovedUsdcPer24h: state.maxAutoApprovedUsdcPer24h,
           allowedVenues: state.allowedVenues,
+          treasuryId,
         }),
       });
+      // 409 means the active treasury moved underneath us (multi-tab) or
+      // is gone (mid-bootstrap). Force a full reload so the form
+      // re-renders against the new treasury's policy. No partial save.
+      if (res.status === 409) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        if (body.error === 'no_active_treasury') {
+          window.location.replace('/');
+          return;
+        }
+        window.location.reload();
+        return;
+      }
       if (!res.ok) {
         const body = await res.text();
         throw new Error(body || `${res.status} ${res.statusText}`);

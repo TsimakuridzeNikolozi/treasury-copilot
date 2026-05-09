@@ -1,4 +1,4 @@
-import { env } from '@/env';
+import { resolveActiveTreasury } from '@/lib/active-treasury';
 import { db } from '@/lib/db';
 import { verifyBearer } from '@/lib/privy';
 import { getPolicy, upsertPolicy } from '@tc/db';
@@ -6,6 +6,8 @@ import { z } from 'zod';
 
 // postgres-js needs Node APIs not available in the Edge runtime.
 export const runtime = 'nodejs';
+// Per-user resolution via cookie isn't part of the cache key.
+export const dynamic = 'force-dynamic';
 
 // Decimal-USDC string: positive number with optional fractional part, no
 // scientific notation. Mirrors the regex used in @tc/types for action amounts.
@@ -30,6 +32,9 @@ const PolicyPatch = z
     maxSingleActionUsdc: decimalUsdc,
     maxAutoApprovedUsdcPer24h: decimalUsdc,
     allowedVenues: z.array(venue).min(1, 'must allow at least one venue'),
+    // Body-vs-cookie 409 contract for PATCH: client sends the treasuryId
+    // it intended to write to; we reject if the active cookie has moved.
+    treasuryId: z.string().uuid(),
   })
   // Cross-field invariant: an action above maxSingleActionUsdc is *denied*
   // by the policy engine, so requireApproval can never sit above it — that
@@ -40,16 +45,27 @@ const PolicyPatch = z
     path: ['requireApprovalAboveUsdc'],
   });
 
+// 409 / Set-Cookie helpers (mirror the chat route's responses).
+function noActiveTreasury(setCookieHeader?: string): Response {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (setCookieHeader) headers['set-cookie'] = setCookieHeader;
+  return new Response(JSON.stringify({ error: 'no_active_treasury' }), {
+    status: 409,
+    headers,
+  });
+}
+
 export async function GET(req: Request) {
   const auth = await verifyBearer(req);
   if (!auth) return new Response('unauthorized', { status: 401 });
-  // M2 PR 1: read the seed treasury's policy until PR 2 swaps in
-  // membership-aware lookup via the active-treasury cookie.
-  // TODO(2-PR2): replace env.SEED_TREASURY_ID with
-  // getActiveTreasuryAndRole + requireMembership. Same authorization
-  // gap as /settings — any logged-in Privy user can hit this today.
-  const policy = await getPolicy(db, env.SEED_TREASURY_ID);
-  return Response.json(policy);
+
+  const resolved = await resolveActiveTreasury(req, db, auth.userId);
+  if ('onboardingRequired' in resolved) return noActiveTreasury(resolved.setCookieHeader);
+
+  const policy = await getPolicy(db, resolved.treasury.id);
+  const res = Response.json(policy);
+  if (resolved.setCookieHeader) res.headers.append('set-cookie', resolved.setCookieHeader);
+  return res;
 }
 
 export async function PATCH(req: Request) {
@@ -62,13 +78,33 @@ export async function PATCH(req: Request) {
     return Response.json({ error: parsed.error.flatten().fieldErrors }, { status: 400 });
   }
 
-  // TODO(2-PR2): replace env.SEED_TREASURY_ID with the active treasury id
-  // + owner-role enforcement (only owners can mutate policy). PR 1 is safe
-  // because the seed is the only treasury; PR 2 must gate this PATCH.
+  const resolved = await resolveActiveTreasury(req, db, auth.userId);
+  if ('onboardingRequired' in resolved) return noActiveTreasury(resolved.setCookieHeader);
+
+  // Owner-only check. PR 2's CHECK constraint allows only 'owner' anyway,
+  // but the runtime gate is wired now so PR-3+ role expansion doesn't
+  // need to revisit every route.
+  if (resolved.role !== 'owner') {
+    return new Response('forbidden', { status: 403 });
+  }
+
+  // Body-vs-cookie 409: stale tab wrote with an out-of-date treasuryId.
+  if (parsed.data.treasuryId !== resolved.treasury.id) {
+    return Response.json({ error: 'active_treasury_changed' }, { status: 409 });
+  }
+
   await upsertPolicy(db, {
-    treasuryId: env.SEED_TREASURY_ID,
-    policy: parsed.data,
+    treasuryId: resolved.treasury.id,
+    policy: {
+      requireApprovalAboveUsdc: parsed.data.requireApprovalAboveUsdc,
+      maxSingleActionUsdc: parsed.data.maxSingleActionUsdc,
+      maxAutoApprovedUsdcPer24h: parsed.data.maxAutoApprovedUsdcPer24h,
+      allowedVenues: parsed.data.allowedVenues,
+    },
     updatedBy: auth.userId,
   });
-  return new Response(null, { status: 204 });
+
+  const res = new Response(null, { status: 204 });
+  if (resolved.setCookieHeader) res.headers.append('set-cookie', resolved.setCookieHeader);
+  return res;
 }

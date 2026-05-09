@@ -1,235 +1,55 @@
-'use client';
+import { ChatClient } from '@/components/chat-client';
+import { resolveActiveTreasury } from '@/lib/active-treasury';
+import { db } from '@/lib/db';
+import { PRIVY_COOKIE, privy } from '@/lib/privy';
+import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
 
-import {
-  Conversation,
-  ConversationContent,
-  ConversationEmptyState,
-  ConversationScrollButton,
-} from '@/components/ai-elements/conversation';
-import { Message, MessageContent } from '@/components/ai-elements/message';
-import {
-  PromptInput,
-  PromptInputFooter,
-  type PromptInputMessage,
-  PromptInputSubmit,
-  PromptInputTextarea,
-} from '@/components/ai-elements/prompt-input';
-import {
-  Tool,
-  ToolContent,
-  ToolHeader,
-  ToolInput,
-  ToolOutput,
-} from '@/components/ai-elements/tool';
-import { AppNav } from '@/components/app-nav';
-import { Button } from '@/components/ui/button';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { MODEL_PROVIDERS, type ModelProvider } from '@/lib/ai/model';
-import { useChat } from '@ai-sdk/react';
-import { usePrivy } from '@privy-io/react-auth';
-import { DefaultChatTransport, type ToolUIPart } from 'ai';
-import { CoinsIcon, SparklesIcon, XIcon } from 'lucide-react';
-import { useRef, useState } from 'react';
+// postgres-js needs Node APIs not available in the Edge runtime.
+export const runtime = 'nodejs';
+// Per-user resolution via cookie isn't part of Next 15's URL-based cache
+// key. Without `force-dynamic` the page can be statically prerendered
+// and a single rendered HTML can leak across users.
+export const dynamic = 'force-dynamic';
 
-const PROVIDER_LABELS: Record<ModelProvider, string> = {
-  anthropic: 'Claude (Anthropic)',
-  openai: 'GPT (OpenAI)',
-};
+export default async function ChatPage() {
+  // Strict server-side auth check before any DB read. Middleware
+  // soft-gates on cookie presence; here we verify the JWT
+  // signature/expiry/issuer.
+  const cookieStore = await cookies();
+  const token = cookieStore.get(PRIVY_COOKIE)?.value;
+  if (!token) redirect('/?next=/chat');
+  let claims: { userId: string };
+  try {
+    const verified = await privy.verifyAuthToken(token);
+    claims = { userId: verified.userId };
+  } catch {
+    redirect('/?next=/chat');
+  }
 
-const SUGGESTIONS: ReadonlyArray<{ title: string; prompt: string }> = [
-  { title: 'Show my positions', prompt: 'Show my positions across all venues.' },
-  {
-    title: 'Compare APYs',
-    prompt: 'Compare the current supply APY for USDC on Kamino vs Save.',
-  },
-  {
-    title: 'Rebalance 0.5 USDC',
-    prompt: 'Rebalance 0.5 USDC from Save to Kamino.',
-  },
-];
+  // Construct a Request-like object with just the cookie header — that's
+  // the only thing resolveActiveTreasury reads (see readCookie in
+  // active-treasury.ts). We deliberately don't spread the rest of the
+  // page's headers; the resolver doesn't use them and including them
+  // would muddy what this object is for.
+  const cookieHeader = cookieStore.toString();
+  const fakeReq = new Request('http://internal/chat', {
+    headers: { cookie: cookieHeader },
+  });
 
-export default function ChatPage() {
-  const [provider, setProvider] = useState<ModelProvider>('anthropic');
-  const [errorDismissed, setErrorDismissed] = useState(false);
-  const { getAccessToken } = usePrivy();
+  const resolved = await resolveActiveTreasury(fakeReq, db, claims.userId);
+  if ('onboardingRequired' in resolved) {
+    redirect('/');
+  }
+  // Note: we deliberately don't write the cookie here even when the
+  // resolver returned `setCookieHeader`. Next 15 forbids cookie mutations
+  // from async server components on a GET render — only Route Handlers
+  // and Server Actions can. The cookie self-heals on the next API
+  // request (chat send / switcher fetch), all of which go through
+  // `resolveActiveTreasury` and can attach the corrected Set-Cookie to
+  // their response. The page itself renders correctly because we pass
+  // `resolved.treasury.id` to the client component as a prop, not the
+  // cookie.
 
-  const getAccessTokenRef = useRef(getAccessToken);
-  getAccessTokenRef.current = getAccessToken;
-
-  const [transport] = useState(
-    () =>
-      new DefaultChatTransport({
-        api: '/api/chat',
-        headers: async (): Promise<Record<string, string>> => {
-          const token = await getAccessTokenRef.current();
-          return token ? { Authorization: `Bearer ${token}` } : {};
-        },
-      }),
-  );
-
-  const { messages, sendMessage, status, error } = useChat({ transport });
-
-  const onSubmit = (msg: PromptInputMessage) => {
-    const text = msg.text.trim();
-    if (!text) return;
-    setErrorDismissed(false);
-    sendMessage({ text }, { body: { provider } });
-  };
-
-  const onSuggest = (prompt: string) => {
-    setErrorDismissed(false);
-    sendMessage({ text: prompt }, { body: { provider } });
-  };
-
-  return (
-    <TooltipProvider>
-      <div className="flex h-screen flex-col bg-background">
-        <AppNav />
-
-        {/* Sub-header: model selector + safety reminder. Sits below the global
-            nav so the global nav stays consistent across pages. */}
-        <div className="border-b bg-muted/30">
-          <div className="mx-auto flex h-11 max-w-5xl items-center justify-between gap-3 px-4 sm:px-6">
-            <p className="hidden text-muted-foreground text-xs sm:block">
-              Actions are gated by policy. Above-threshold proposals route to Telegram for human
-              approval.
-            </p>
-            <div className="flex items-center gap-2">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="text-muted-foreground text-xs">Model</span>
-                </TooltipTrigger>
-                <TooltipContent>
-                  Whichever model proposes, the policy engine is the only thing that decides.
-                </TooltipContent>
-              </Tooltip>
-              <Select onValueChange={(v) => setProvider(v as ModelProvider)} value={provider}>
-                <SelectTrigger className="w-[180px]" size="sm" aria-label="AI model">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {MODEL_PROVIDERS.map((p) => (
-                    <SelectItem key={p} value={p}>
-                      {PROVIDER_LABELS[p]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-        </div>
-
-        <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col overflow-hidden">
-          <Conversation>
-            <ConversationContent>
-              {messages.length === 0 ? (
-                <div className="flex flex-1 flex-col items-center justify-center gap-6 py-12">
-                  <ConversationEmptyState
-                    description="Ask in plain English. The agent proposes, the policy decides, the signer executes."
-                    icon={<CoinsIcon className="size-8" />}
-                    title="Treasury Copilot is ready"
-                  />
-                  <div className="flex w-full flex-col items-center gap-2">
-                    <span className="text-muted-foreground text-xs uppercase tracking-wide">
-                      Try one of these
-                    </span>
-                    <div className="flex flex-wrap justify-center gap-2">
-                      {SUGGESTIONS.map((s) => (
-                        <Button
-                          key={s.title}
-                          variant="outline"
-                          size="sm"
-                          onClick={() => onSuggest(s.prompt)}
-                          className="gap-1.5"
-                        >
-                          <SparklesIcon className="size-3.5" aria-hidden />
-                          {s.title}
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                messages.map((m, mi) => (
-                  <Message from={m.role} key={`${m.id}-${mi}`}>
-                    <MessageContent>
-                      {m.parts.map((part, i) => {
-                        const key = `${m.id}-${mi}-${i}`;
-                        if (part.type === 'text') {
-                          return (
-                            <p className="whitespace-pre-wrap" key={key}>
-                              {part.text}
-                            </p>
-                          );
-                        }
-                        if (part.type.startsWith('tool-')) {
-                          const tp = part as ToolUIPart;
-                          return (
-                            <Tool defaultOpen key={key}>
-                              <ToolHeader state={tp.state} type={tp.type} />
-                              <ToolContent>
-                                {tp.input !== undefined && <ToolInput input={tp.input} />}
-                                <ToolOutput errorText={tp.errorText} output={tp.output} />
-                              </ToolContent>
-                            </Tool>
-                          );
-                        }
-                        return null;
-                      })}
-                    </MessageContent>
-                  </Message>
-                ))
-              )}
-            </ConversationContent>
-            <ConversationScrollButton />
-          </Conversation>
-
-          {error && !errorDismissed && (
-            <div
-              role="alert"
-              className="flex items-start gap-2 border-t bg-destructive/10 px-4 py-3 text-destructive text-sm sm:px-6"
-            >
-              <span className="flex-1 leading-snug">
-                <span className="font-medium">Something went wrong.</span> {error.message}
-              </span>
-              <button
-                type="button"
-                onClick={() => setErrorDismissed(true)}
-                aria-label="Dismiss error"
-                className="-m-1 rounded p-1 hover:bg-destructive/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive"
-              >
-                <XIcon className="size-4" />
-              </button>
-            </div>
-          )}
-
-          <div className="border-t bg-background p-4 sm:p-6">
-            <PromptInput onSubmit={onSubmit}>
-              <PromptInputTextarea placeholder='e.g. "rebalance 0.5 USDC from save to kamino"' />
-              <PromptInputFooter>
-                <span className="text-muted-foreground text-xs">
-                  <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px]">
-                    Enter
-                  </kbd>{' '}
-                  to send ·{' '}
-                  <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px]">
-                    Shift + Enter
-                  </kbd>{' '}
-                  for newline
-                </span>
-                <PromptInputSubmit status={status} />
-              </PromptInputFooter>
-            </PromptInput>
-          </div>
-        </main>
-      </div>
-    </TooltipProvider>
-  );
+  return <ChatClient activeTreasuryId={resolved.treasury.id} />;
 }

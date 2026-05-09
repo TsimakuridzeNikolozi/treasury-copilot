@@ -191,6 +191,29 @@ async function tick(): Promise<void> {
         claimedForExecution = true;
         console.log(`[executor] action ${row.id} claimed, submitting`);
 
+        // M2 PR 2 transition guard: per-treasury Turnkey provisioning is
+        // live (web side) but the worker still routes all signing through
+        // a single seed wallet. Any action whose `treasuryId` isn't the
+        // seed would otherwise fail downstream at the wallet-mismatch
+        // check in packages/signer/src/index.ts:227-232 with an opaque
+        // "wallet mismatch" error — fail-fast here with a clear reason
+        // instead. PR 3 deletes this block as a single hunk when the
+        // per-treasury signer factory ships.
+        // TODO(2-PR3): remove when per-treasury signer factory ships.
+        if (claimed.treasuryId !== env.SEED_TREASURY_ID) {
+          await transitionAction(db, {
+            id: row.id,
+            from: 'executing',
+            to: 'failed',
+            actor: 'signer',
+            payload: { error: 'signer not yet wired for treasury' },
+          });
+          console.warn(
+            `[executor] action ${row.id} failed: non-seed treasury ${claimed.treasuryId}`,
+          );
+          continue;
+        }
+
         // Authorization came from either a policy `allow` decision (auto-
         // approval at insert time) or a Telegram allowlisted approver
         // (recorded in `approvals` + `transitionAction(pending→approved)`).
