@@ -1,5 +1,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import { Keypair } from '@solana/web3.js';
+import nacl from 'tweetnacl';
+import type { TreasurySigner } from './types';
 
 // Loads a Solana CLI–format keypair (number[] of secret bytes) from disk.
 // Runs once at worker boot; throwing here surfaces config errors loudly
@@ -36,4 +38,18 @@ export function loadTreasuryKeypair(path: string): Keypair {
     );
   }
   return Keypair.fromSecretKey(Uint8Array.from(parsed));
+}
+
+// Local-keypair TreasurySigner: in-process ed25519 signing via tweetnacl.
+// `Keypair.secretKey` is the 64-byte concat (secret || public) used by
+// solana-web3.js; nacl's signing API expects the same layout, so we pass it
+// through unchanged. Used for unit tests and dev — production runs Turnkey.
+export function createLocalKeypairTreasurySigner(path: string): TreasurySigner {
+  const keypair = loadTreasuryKeypair(path);
+  return {
+    publicKey: keypair.publicKey,
+    async signSerializedMessage(message) {
+      return nacl.sign.detached(message, keypair.secretKey);
+    },
+  };
 }

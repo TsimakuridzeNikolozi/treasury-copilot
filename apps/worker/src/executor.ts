@@ -9,7 +9,7 @@ import {
   transitionAction,
 } from '@tc/db';
 import { type PolicyDecision, deriveRebalanceLegs } from '@tc/policy';
-import { createSigner } from '@tc/signer';
+import { type SignerConfig, createSigner } from '@tc/signer';
 import type { ExecuteResult, ProposedAction } from '@tc/types';
 import { editApprovalCardWithExecution } from './bot';
 
@@ -31,12 +31,37 @@ async function safeEditCard(
 import { db } from './db';
 import { env } from './env';
 
-const signer = createSigner({
-  rpcUrl: env.SOLANA_RPC_URL,
-  keypairPath: env.SOLANA_KEYPAIR_PATH,
-  commitment: env.SIGNER_COMMITMENT,
-  confirmTimeoutMs: env.SIGNER_CONFIRM_TIMEOUT_MS,
-});
+function buildSignerConfig(): SignerConfig {
+  // Tagged switch — TS exhaustiveness fails the build if a new
+  // SIGNER_BACKEND variant lands without a matching case.
+  switch (env.SIGNER_BACKEND) {
+    case 'local':
+      return {
+        backend: 'local',
+        rpcUrl: env.SOLANA_RPC_URL,
+        keypairPath: env.SOLANA_KEYPAIR_PATH,
+        commitment: env.SIGNER_COMMITMENT,
+        confirmTimeoutMs: env.SIGNER_CONFIRM_TIMEOUT_MS,
+      };
+    case 'turnkey':
+      return {
+        backend: 'turnkey',
+        rpcUrl: env.SOLANA_RPC_URL,
+        turnkey: {
+          apiPublicKey: env.TURNKEY_API_PUBLIC_KEY,
+          apiPrivateKey: env.TURNKEY_API_PRIVATE_KEY,
+          baseUrl: env.TURNKEY_BASE_URL,
+          organizationId: env.TURNKEY_ORGANIZATION_ID,
+          signWith: env.TURNKEY_SIGN_WITH,
+        },
+        commitment: env.SIGNER_COMMITMENT,
+        confirmTimeoutMs: env.SIGNER_CONFIRM_TIMEOUT_MS,
+        signTimeoutMs: env.SIGNER_SIGN_TIMEOUT_MS,
+      };
+  }
+}
+
+const signer = createSigner(buildSignerConfig());
 
 // Persist the leg-2 (deposit / single-leg) signature into `tx_signature`.
 // Throws if the CAS-on-NULL loses, telling the signer to abort before

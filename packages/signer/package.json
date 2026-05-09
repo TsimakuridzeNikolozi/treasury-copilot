@@ -20,7 +20,9 @@
     "@tc/policy": "workspace:*",
     "@tc/protocols": "workspace:*",
     "@tc/types": "workspace:*",
-    "bs58": "^6.0.0"
+    "@turnkey/sdk-server": "^4.5.0",
+    "bs58": "^6.0.0",
+    "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

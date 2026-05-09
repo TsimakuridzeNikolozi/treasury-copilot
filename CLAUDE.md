@@ -61,6 +61,15 @@ agent-tools  →  policy  →  signer
 
 When adding a new tool or signer method, **never bypass this chain**. Don't add an export from `@tc/agent-tools` to `@tc/signer` directly — it would defeat the boundary.
 
+### Signer backends
+
+Two pluggable backends inside `@tc/signer`, picked at runtime via `SIGNER_BACKEND`:
+
+- `local` — reads a Solana CLI keypair off disk (`packages/signer/src/wallet.ts`). Dev/tests only.
+- `turnkey` — delegates signing to Turnkey's HSM-backed API (`packages/signer/src/turnkey.ts`). Staging and prod.
+
+Both implement an internal `TreasurySigner` interface (`packages/signer/src/types.ts`): `publicKey` + `signSerializedMessage(bytes)`. The exported `Signer.executeApproved` (the trust boundary) is unchanged — only the in-process keypair gets swapped for an HSM call. Don't import `@turnkey/sdk-server` from anywhere else; that would bypass the abstraction.
+
 ### AI provider abstraction
 
 Two pluggable backends — Anthropic Claude and OpenAI. Picked at runtime via `MODEL_PROVIDER`. Both plug in through a single switch in `apps/web/src/lib/ai/model.ts`. **Don't import `@ai-sdk/anthropic` or `@ai-sdk/openai` from anywhere else** — that breaks the swap. The trust boundary is unchanged: whichever model proposes, `policy.evaluate()` decides.
@@ -123,10 +132,9 @@ Biome only. **Do not add ESLint or Prettier.** Run `pnpm exec biome check --writ
 
 These are first-feature work, not setup. When asked to "add X", check this list — if it's here, the answer is "yes, that's phase-1 work, not a config tweak":
 
-- Auth (Privy / Turnkey)
+- End-user auth (Privy / etc.) — the worker signs with a Turnkey-custodied treasury wallet, but there's no human login yet
 - Protocol SDK coverage in `packages/protocols`: Kamino and Save are wired end-to-end (deposit + withdraw); Drift and Marginfi builders are still stubs
 - Telegram bot client (grammy) in `apps/worker/src/bot.ts`
-- Signer implementation (the `@tc/signer.executeApproved` interface exists; no provider yet)
 - A `policies` table — phase-1 rules live in `packages/policy/src/index.ts` (`DEFAULT_POLICY`)
 - CI workflows (`.github/workflows/`)
 - Vercel project and Railway service configuration
