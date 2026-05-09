@@ -94,13 +94,11 @@ export function TreasurySwitcher({ activeTreasuryId }: { activeTreasuryId?: stri
           variant="outline"
           size="sm"
           className="gap-2"
-          disabled={!ready || switching || !treasuries}
+          disabled={!ready || switching}
           aria-label="Switch treasury"
         >
           <WalletIcon className="size-3.5" aria-hidden />
-          <span className="max-w-[140px] truncate text-xs">
-            {current?.name ?? (treasuries ? '—' : 'Loading…')}
-          </span>
+          <span className="max-w-[140px] truncate text-xs">{current?.name ?? '—'}</span>
           <ChevronDownIcon className="size-3.5" aria-hidden />
         </Button>
       </DropdownMenuTrigger>

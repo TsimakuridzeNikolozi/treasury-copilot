@@ -66,6 +66,20 @@ export function PolicyForm({
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
+  // Today the only path that swaps treasury reloads the page, so this
+  // effect is dormant on the live UX. Kept as defense-in-depth: if a
+  // future change re-renders PolicyForm in place with a new treasuryId
+  // (e.g. an SPA-style switcher), stale form values would otherwise be
+  // submitted against the new treasury.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only the identity-changing inputs should trigger a reset; ignoring object-shape churn on `initial`.
+  useEffect(() => {
+    const fresh = policyToState(initial);
+    setState(fresh);
+    setBaseline(fresh);
+    setError(null);
+    setSavedAt(null);
+  }, [treasuryId, initial]);
+
   const dirty = useMemo(
     () =>
       state.requireApprovalAboveUsdc !== baseline.requireApprovalAboveUsdc ||

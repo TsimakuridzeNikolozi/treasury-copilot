@@ -2,7 +2,7 @@ import { createDb } from '@tc/db';
 import { schema } from '@tc/db';
 import { TEST_DATABASE_URL } from '@tc/db/test/url';
 import { eq } from 'drizzle-orm';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Inject env values BEFORE any module that reads them loads. The mock
 // SEED_TREASURY_ID has to match a treasury row we insert in beforeAll.
@@ -124,10 +124,6 @@ function bearerReq(token = 'tok'): Request {
     headers: { authorization: `Bearer ${token}` },
   });
 }
-
-afterEach(() => {
-  vi.clearAllMocks();
-});
 
 describe('POST /api/me/bootstrap', () => {
   it('401 when bearer is missing/invalid', async () => {

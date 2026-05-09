@@ -86,15 +86,14 @@ describe('resolveActiveTreasury', () => {
 
     const result = await resolveActiveTreasury(reqWith(TREASURY_A_ID), fakeDb, PRIVY_DID);
 
-    expect('treasury' in result && result.treasury).toEqual(treasuryB);
-    expect('setCookieHeader' in result ? result.setCookieHeader : undefined).toContain(
-      `tc_active_treasury=${TREASURY_B_ID}`,
-    );
+    expect('treasury' in result).toBe(true);
+    if (!('treasury' in result)) throw new Error('expected resolved treasury');
+    expect(result.treasury).toEqual(treasuryB);
+    expect('setCookieHeader' in result).toBe(true);
+    expect(result.setCookieHeader).toContain(`tc_active_treasury=${TREASURY_B_ID}`);
     // Crucially, this is a SET (re-write) not a CLEAR — Max-Age is the
     // 30-day live value, not 0.
-    expect('setCookieHeader' in result ? result.setCookieHeader : undefined).toContain(
-      'Max-Age=2592000',
-    );
+    expect(result.setCookieHeader).toContain('Max-Age=2592000');
   });
 
   it('(c) cookie present-but-invalid AND user has no memberships → onboardingRequired + Set-Cookie clear', async () => {

@@ -85,7 +85,7 @@ export function ChatClient({ activeTreasuryId }: ChatClientProps) {
           const token = await getAccessTokenRef.current();
           return token ? { Authorization: `Bearer ${token}` } : {};
         },
-        // 409 handling lives here, not in a useEffect that sniffs
+        // 409 / 401 handling lives here, not in a useEffect that sniffs
         // error.message strings. The AI SDK's error surface might
         // change in future versions; a fetch override looks at the raw
         // status + body and is robust to that.
@@ -94,8 +94,16 @@ export function ChatClient({ activeTreasuryId }: ChatClientProps) {
         //                             pick up the new active treasury.
         //   no_active_treasury     → mid-bootstrap or revoked
         //                             membership; send the user to /.
+        //   401 / 403              → bearer expired or rejected; bounce
+        //                             to / so Privy's login flow can
+        //                             refresh the token instead of
+        //                             leaving the chat dead.
         fetch: async (url, init) => {
           const res = await fetch(url, init);
+          if (res.status === 401 || res.status === 403) {
+            routerRef.current.replace('/');
+            return res;
+          }
           if (res.status === 409) {
             const body = (await res
               .clone()

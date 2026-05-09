@@ -201,16 +201,21 @@ async function tick(): Promise<void> {
         // per-treasury signer factory ships.
         // TODO(2-PR3): remove when per-treasury signer factory ships.
         if (claimed.treasuryId !== env.SEED_TREASURY_ID) {
-          await transitionAction(db, {
+          const error = 'signer not yet wired for treasury';
+          const updated = await transitionAction(db, {
             id: row.id,
             from: 'executing',
             to: 'failed',
             actor: 'signer',
-            payload: { error: 'signer not yet wired for treasury' },
+            payload: { error },
           });
           console.warn(
             `[executor] action ${row.id} failed: non-seed treasury ${claimed.treasuryId}`,
           );
+          // Auto-approved actions skip silently inside safeEditCard
+          // (no telegramMessageId); human-approved rows get their card
+          // flipped to the failure state so it doesn't sit at "approved".
+          await safeEditCard(updated, { kind: 'failure', error });
           continue;
         }
 

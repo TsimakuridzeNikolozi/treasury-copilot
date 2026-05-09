@@ -97,7 +97,9 @@ Two pluggable backends inside `@tc/signer`, picked at runtime via `SIGNER_BACKEN
 - `local` — reads a Solana CLI keypair off disk (`packages/signer/src/wallet.ts`). Dev/tests only.
 - `turnkey` — delegates signing to Turnkey's HSM-backed API (`packages/signer/src/turnkey.ts`). Staging and prod.
 
-Both implement an internal `TreasurySigner` interface (`packages/signer/src/types.ts`): `publicKey` + `signSerializedMessage(bytes)`. The exported `Signer.executeApproved` (the trust boundary) is unchanged — only the in-process keypair gets swapped for an HSM call. Don't import `@turnkey/sdk-server` from anywhere else; that would bypass the abstraction.
+Both implement an internal `TreasurySigner` interface (`packages/signer/src/types.ts`): `publicKey` + `signSerializedMessage(bytes)`. The exported `Signer.executeApproved` (the trust boundary) is unchanged — only the in-process keypair gets swapped for an HSM call. Don't import `@turnkey/sdk-server` from anywhere else for *signing* — that would bypass the abstraction.
+
+**Documented exception:** `@tc/turnkey-admin` also depends on `@turnkey/sdk-server`, but for *org/wallet provisioning* (CreateSubOrganization), not signing. Provisioning is a distinct concern from `TreasurySigner` and is web-only (never imported by the worker). New code that needs to *sign* must go through `@tc/signer`; new admin-API calls (sub-org lifecycle, wallet creation) belong in `@tc/turnkey-admin`.
 
 ### Auth + settings
 
