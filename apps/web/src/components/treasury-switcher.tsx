@@ -127,19 +127,27 @@ export function TreasurySwitcher({ activeTreasuryId }: { activeTreasuryId?: stri
                 key={t.id}
                 onSelect={() => onSelect(t.id)}
                 className="cursor-pointer"
+                aria-label={`${t.name} ${t.walletAddress}`}
               >
                 {/* Two-line layout: name + active checkmark on top, truncated
                     base58 wallet beneath. The full address is exposed via
                     `title` on hover so power users don't have to navigate to
-                    /settings just to read it. */}
+                    /settings just to read it; aria-label on the row + a
+                    visually-hidden span carry it for screen readers and
+                    touch/assistive tech that don't surface `title`. */}
                 <div className="flex w-full flex-col gap-0.5">
                   <div className="flex items-center gap-2">
                     <span className="flex-1 truncate">{t.name}</span>
                     {active && <CheckIcon className="size-4" aria-hidden />}
                   </div>
-                  <span className="font-mono text-muted-foreground text-xs" title={t.walletAddress}>
+                  <span
+                    className="font-mono text-muted-foreground text-xs"
+                    title={t.walletAddress}
+                    aria-hidden
+                  >
                     {truncateAddress(t.walletAddress)}
                   </span>
+                  <span className="sr-only">{t.walletAddress}</span>
                 </div>
               </DropdownMenuItem>
             );

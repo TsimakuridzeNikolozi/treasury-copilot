@@ -72,8 +72,8 @@ export const env = createEnv({
     NEXT_PUBLIC_TELEGRAM_BOT_USERNAME: z
       .string()
       .regex(
-        /^[A-Za-z][A-Za-z0-9_]{4,31}$/,
-        'Telegram bot @username (no leading @): 5–32 chars, letter-led, alphanumeric + _',
+        /^[A-Za-z][A-Za-z0-9_]{1,28}[Bb][Oo][Tt]$/,
+        'Telegram bot @username (no leading @): 5–32 chars, letter-led, alphanumeric + _, must end with "bot" (case-insensitive)',
       )
       .optional(),
   },

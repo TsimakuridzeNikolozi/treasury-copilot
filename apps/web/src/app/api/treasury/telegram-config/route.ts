@@ -65,7 +65,12 @@ export async function PATCH(req: Request) {
 
   // Body-vs-cookie 409: stale tab wrote with an out-of-date treasuryId.
   if (parsed.data.treasuryId !== resolved.treasury.id) {
-    return Response.json({ error: 'active_treasury_changed' }, { status: 409 });
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (resolved.setCookieHeader) headers['set-cookie'] = resolved.setCookieHeader;
+    return new Response(JSON.stringify({ error: 'active_treasury_changed' }), {
+      status: 409,
+      headers,
+    });
   }
 
   // Atomic update + audit row (with before/after payload) is encapsulated in
