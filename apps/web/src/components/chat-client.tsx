@@ -155,7 +155,7 @@ export function ChatClient({ activeTreasuryId, treasuryName }: ChatClientProps) 
           <div className="mx-auto flex h-11 max-w-5xl items-center justify-between gap-3 px-4 sm:px-6">
             <p className="min-w-0 truncate text-muted-foreground text-xs">
               <span className="font-medium text-foreground">{treasuryName}</span>
-              <span className="hidden sm:inline">
+              <span className="inline">
                 {' · Above-threshold actions route to Telegram for human approval.'}
               </span>
             </p>

@@ -279,7 +279,7 @@ function ApproverIdsField({
   // sense of how many people can approve before they save. Uses the same
   // dedupe + trim logic as parseApproverIds so the displayed count
   // matches what would be persisted.
-  const approverCount = parseApproverIds(value).length;
+  const approverCount = parseApproverIds(value).filter((id) => /^\d+$/.test(id)).length;
   const countLabel =
     approverCount === 0
       ? 'No approvers configured'
