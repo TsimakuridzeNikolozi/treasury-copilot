@@ -18,10 +18,6 @@ export const solanaPubkeyBase58Schema = z
   .string()
   .regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/, 'must be a base58-encoded Solana pubkey');
 
-export const treasuryPubkeyBase58Schema = solanaPubkeyBase58Schema.describe(
-  "Treasury wallet's base58 pubkey — used as the default address for read tools (positions, APYs).",
-);
-
 export const nodeEnvSchema = z.enum(['development', 'test', 'production']).default('development');
 
 export const logLevelSchema = z
@@ -85,18 +81,6 @@ export const signerSignTimeoutMsSchema = z.coerce.number().int().positive().defa
 // Bearer JWT the chat client sends. Visible once on app creation in the
 // Privy dashboard; rotating it requires re-issuing in dashboard.
 export const privyAppSecretSchema = z.string().min(1).describe('Privy app secret');
-
-// Seed treasury id (uuid). Written to `apps/web/.env.local` by the M2 seed
-// script (db:seed-m2). After PR 2 the only remaining web consumer is the
-// local-mode bootstrap stage 3 (which attaches new dev users to the seed
-// treasury); the worker holds it for the temporary executor guard until
-// PR 3 ships the per-treasury signer factory. Removed from worker env in
-// PR 3, from web env in PR 4. Validating as uuid here so the operator
-// catches typos at boot rather than at first query.
-export const seedTreasuryIdSchema = z
-  .string()
-  .uuid()
-  .describe('M2 seed treasury id — written by db:seed-m2');
 
 // Parent-org Turnkey admin credentials. Used by @tc/turnkey-admin to mint
 // per-user sub-orgs and Solana wallets at first sign-in. Server-only.

@@ -1,5 +1,6 @@
 'use client';
 
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { CheckIcon, CopyIcon } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
@@ -9,7 +10,25 @@ import { useEffect, useState } from 'react';
 //
 // Client component because navigator.clipboard + state need to live in the
 // browser. The address itself comes from the server page via prop.
-export function WalletAddressBlock({ address }: { address: string }) {
+const SIGNER_BACKEND_LABELS: Record<'local' | 'turnkey', string> = {
+  local: 'Local keypair',
+  turnkey: 'Turnkey HSM',
+};
+
+const SIGNER_BACKEND_DESCRIPTIONS: Record<'local' | 'turnkey', string> = {
+  turnkey:
+    'Signing is delegated to Turnkey HSM. Operators hold parent admin keys; per-treasury sub-org isolates this wallet.',
+  local:
+    'Signing uses a local Solana keypair on the worker host. Dev mode only — never run with real funds.',
+};
+
+export function WalletAddressBlock({
+  address,
+  signerBackend,
+}: {
+  address: string;
+  signerBackend: 'local' | 'turnkey';
+}) {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -30,7 +49,30 @@ export function WalletAddressBlock({ address }: { address: string }) {
 
   return (
     <div className="flex flex-col gap-1 rounded-lg border bg-muted/30 p-4">
-      <span className="text-muted-foreground text-xs uppercase tracking-wide">Treasury wallet</span>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-muted-foreground text-xs uppercase tracking-wide">
+          Treasury wallet
+        </span>
+        {/* Local TooltipProvider so the component is self-contained — the
+            settings page doesn't currently wrap in one and we'd rather
+            not leak that requirement to every caller. The radix
+            primitive is happy with multiple providers in a tree. */}
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="inline-flex cursor-help items-center rounded-full border bg-background px-2 py-0.5 font-medium text-[11px] text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              >
+                {SIGNER_BACKEND_LABELS[signerBackend]}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs">
+              {SIGNER_BACKEND_DESCRIPTIONS[signerBackend]}
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      </div>
       <div className="flex items-center gap-2">
         <code className="break-all font-mono text-sm">{address}</code>
         <button

@@ -10,10 +10,8 @@ import {
   privyAppSecretSchema,
   publicAppUrlSchema,
   publicPrivyAppIdSchema,
-  seedTreasuryIdSchema,
   signerBackendSchema,
   solanaRpcUrlSchema,
-  treasuryPubkeyBase58Schema,
   turnkeyBaseUrlSchema,
   turnkeyParentApiPrivateKeySchema,
   turnkeyParentApiPublicKeySchema,
@@ -25,15 +23,6 @@ export const env = createEnv({
   server: {
     DATABASE_URL: databaseUrlSchema,
     SOLANA_RPC_URL: solanaRpcUrlSchema,
-    // M2 PR 1: still the canonical pivot for read tools (snapshot wallet
-    // address). PR 2 swaps this for the active treasury's wallet_address;
-    // PR 4 removes it entirely from web env.
-    TREASURY_PUBKEY_BASE58: treasuryPubkeyBase58Schema,
-    // M2 PR 2: only consumer is local-mode /api/me/bootstrap stage 3
-    // (attaches new dev users to the seed treasury). chat/policy/settings
-    // all read via getActiveTreasuryAndRole now. Removed from web env in
-    // PR 4 once invitations cover the dev-onboarding shortcut.
-    SEED_TREASURY_ID: seedTreasuryIdSchema,
     LOG_LEVEL: logLevelSchema,
 
     MODEL_PROVIDER: modelProviderSchema,

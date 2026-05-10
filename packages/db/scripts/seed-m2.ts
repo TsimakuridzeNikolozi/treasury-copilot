@@ -23,8 +23,8 @@
 //
 // For fresh installs (no M1 data), step 2 is still required: the
 // structural flips need to run, the seed treasury still has to exist
-// for the chat/policy/settings routes to work via SEED_TREASURY_ID, and
-// the script's backfills are no-ops (zero rows touched).
+// for local-mode bootstrap to attach new dev users to it, and the
+// script's backfills are no-ops (zero rows touched).
 //
 // Idempotent end-to-end: re-running the script is safe — every step
 // guards on "already applied" state.
@@ -32,9 +32,10 @@
 // Reads env vars directly (NOT through @tc/env's Zod schemas) so the
 // script runs as a one-off without needing the full app's env wired up.
 //
-// Prints the seed treasury's UUID at the end — copy it into
-// `apps/web/.env.local` as SEED_TREASURY_ID so chat/policy/settings keep
-// working until PR 2 ships membership-aware lookup.
+// Prints the seed treasury's wallet address at the end — operators
+// fund that address. PR 4 dropped the SEED_TREASURY_ID env back-reference
+// in favor of a runtime lookup on `signer_backend = 'local'` in the
+// bootstrap path, so no copy-paste is required after seeding.
 
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -252,14 +253,14 @@ async function main() {
     await applyM2StructuralFlips(db);
     console.log('[seed-m2] Applied structural flips (policies PK swap, NOT NULL flips)');
 
-    // 8. Print the seed treasury id so the operator can copy it into
-    //    apps/web/.env.local as SEED_TREASURY_ID.
+    // 8. Print the seed treasury wallet so the operator knows which
+    //    address to fund. The treasury id is no longer needed by env
+    //    (PR 4 swapped to runtime lookup on signer_backend='local').
     console.log('');
     console.log('========================================');
-    console.log(`SEED_TREASURY_ID=${seedTreasuryId}`);
+    console.log(`Seed treasury created: id=${seedTreasuryId}`);
+    console.log(`Wallet (fund this address): ${env.treasuryPubkey}`);
     console.log('========================================');
-    console.log('');
-    console.log('Add this to apps/web/.env.local. M2 PR 1 is now applied.');
   } finally {
     await client.end();
   }

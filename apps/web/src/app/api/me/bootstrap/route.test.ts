@@ -4,18 +4,19 @@ import { TEST_DATABASE_URL } from '@tc/db/test/url';
 import { eq } from 'drizzle-orm';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Inject env values BEFORE any module that reads them loads. The mock
-// SEED_TREASURY_ID has to match a treasury row we insert in beforeAll.
+// Inject env values BEFORE any module that reads them loads. The
+// local-mode bootstrap path is identified by signer_backend='local' on
+// the seeded treasury row (PR 4 dropped the SEED_TREASURY_ID env back-
+// reference); SEED_ID is still used to insert + assert against a
+// stable id in tests, but it's no longer wired into the env.
 const SEED_ID = '00000000-0000-4000-8000-000000000777';
 const PRIVY_DID_NEW = 'did:privy:new-user';
 const PRIVY_DID_EXISTING = 'did:privy:existing-user';
 const PRIVY_DID_CONCURRENT = 'did:privy:concurrent-user';
 
 process.env.DATABASE_URL = TEST_DATABASE_URL;
-process.env.SEED_TREASURY_ID = SEED_ID;
 process.env.SIGNER_BACKEND = 'local'; // overridden per test where needed
 process.env.SOLANA_RPC_URL = 'http://localhost';
-process.env.TREASURY_PUBKEY_BASE58 = 'So11111111111111111111111111111111111111112';
 process.env.MODEL_PROVIDER = 'anthropic';
 process.env.PRIVY_APP_SECRET = 'test-secret';
 process.env.NEXT_PUBLIC_APP_URL = 'http://localhost:3000';
@@ -33,7 +34,6 @@ const mocks = vi.hoisted(() => ({
   provisionTreasury: vi.fn(),
   envState: {
     SIGNER_BACKEND: 'local' as 'local' | 'turnkey',
-    SEED_TREASURY_ID: '00000000-0000-4000-8000-000000000777',
     TURNKEY_PARENT_ORG_ID: '00000000-0000-4000-8000-000000000999',
     TURNKEY_PARENT_API_PUBLIC_KEY: 'a'.repeat(66),
     TURNKEY_PARENT_API_PRIVATE_KEY: 'b'.repeat(64),
@@ -75,22 +75,9 @@ let POST: typeof import('./route').POST;
 const testDb = createDb(TEST_DATABASE_URL);
 
 beforeAll(async () => {
-  // Seed treasury — the local-mode bootstrap path looks this up by id.
-  await testDb
-    .insert(schema.treasuries)
-    .values({
-      id: SEED_ID,
-      name: 'Seed',
-      walletAddress: 'SeedWalletAddress11111111111111111111111111',
-      turnkeySubOrgId: 'seed-sub',
-      turnkeyWalletId: null,
-      signerBackend: 'local',
-      telegramChatId: null,
-      telegramApproverIds: [],
-      createdBy: null,
-    })
-    .onConflictDoNothing();
-
+  // Just import the route — beforeEach handles seeding (TRUNCATE +
+  // re-insert) before every test, so a pre-import insert here would
+  // be immediately overwritten and confuses readers.
   ({ POST } = await import('./route'));
 });
 
@@ -366,5 +353,54 @@ describe('POST /api/me/bootstrap', () => {
 
     errorSpy.mockRestore();
     mocks.envState.SIGNER_BACKEND = 'local';
+  });
+
+  it('500 when local mode finds no signer_backend=local treasury (operator setup error)', async () => {
+    mocks.envState.SIGNER_BACKEND = 'local';
+
+    // Wipe the seed inserted by beforeEach so the runtime lookup has 0
+    // rows. The plain delete (no CASCADE) succeeds because beforeEach
+    // already TRUNCATEd every dependent table — no FK references survive
+    // to this row at this point.
+    await testDb.delete(schema.treasuries).where(eq(schema.treasuries.id, SEED_ID));
+
+    mocks.verifyBearer.mockResolvedValue({ userId: 'did:privy:no-seed' });
+    mocks.getUser.mockResolvedValue({ email: null });
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await POST(bearerReq());
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.error).toBe('persistence_failed');
+    expect(body.detail).toContain('signer_backend=local');
+    errorSpy.mockRestore();
+  });
+
+  it('500 when local mode finds >1 signer_backend=local treasuries (data corruption signal)', async () => {
+    mocks.envState.SIGNER_BACKEND = 'local';
+
+    // beforeEach already inserted SEED_ID; add a second local row.
+    await testDb.insert(schema.treasuries).values({
+      id: '00000000-0000-4000-8000-000000000888',
+      name: 'Second Local',
+      walletAddress: 'SecondLocalWallet111111111111111111111111111',
+      turnkeySubOrgId: 'second-local-sub',
+      turnkeyWalletId: null,
+      signerBackend: 'local',
+      telegramChatId: null,
+      telegramApproverIds: [],
+      createdBy: null,
+    });
+
+    mocks.verifyBearer.mockResolvedValue({ userId: 'did:privy:two-locals' });
+    mocks.getUser.mockResolvedValue({ email: null });
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await POST(bearerReq());
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.error).toBe('persistence_failed');
+    expect(body.detail).toMatch(/Found 2 treasuries/);
+    errorSpy.mockRestore();
   });
 });

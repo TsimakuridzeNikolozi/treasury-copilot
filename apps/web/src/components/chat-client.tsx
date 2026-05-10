@@ -61,9 +61,13 @@ interface ChatClientProps {
   // body so the route can run the body-vs-cookie 409 check. Stale tabs
   // get a 409 → full reload to pick up the new id.
   activeTreasuryId: string;
+  // Server-resolved active treasury name; rendered in the sub-header so
+  // users see which treasury they're chatting about without opening the
+  // switcher dropdown.
+  treasuryName: string;
 }
 
-export function ChatClient({ activeTreasuryId }: ChatClientProps) {
+export function ChatClient({ activeTreasuryId, treasuryName }: ChatClientProps) {
   const [provider, setProvider] = useState<ModelProvider>('anthropic');
   const [errorDismissed, setErrorDismissed] = useState(false);
   const { getAccessToken } = usePrivy();
@@ -139,13 +143,21 @@ export function ChatClient({ activeTreasuryId }: ChatClientProps) {
       <div className="flex h-screen flex-col bg-background">
         <AppNav activeTreasuryId={activeTreasuryId} />
 
-        {/* Sub-header: model selector + safety reminder. Sits below the global
-            nav so the global nav stays consistent across pages. */}
+        {/* Sub-header: active treasury name + safety reminder + model
+            selector. Sits below the global nav so the global nav stays
+            consistent across pages. The treasury name is also visible in
+            the AppNav switcher button — surfacing it again here is mild
+            duplication, but tying it to the safety reminder turns this
+            row into the persistent "what am I chatting about / what
+            happens next" line. The Telegram-routing copy is load-bearing
+            user education and stays even on small screens. */}
         <div className="border-b bg-muted/30">
           <div className="mx-auto flex h-11 max-w-5xl items-center justify-between gap-3 px-4 sm:px-6">
-            <p className="hidden text-muted-foreground text-xs sm:block">
-              Actions are gated by policy. Above-threshold proposals route to Telegram for human
-              approval.
+            <p className="min-w-0 truncate text-muted-foreground text-xs">
+              <span className="font-medium text-foreground">{treasuryName}</span>
+              <span className="inline">
+                {' · Above-threshold actions route to Telegram for human approval.'}
+              </span>
             </p>
             <div className="flex items-center gap-2">
               <Tooltip>

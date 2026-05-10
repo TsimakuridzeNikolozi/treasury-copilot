@@ -7,7 +7,7 @@ import {
   addMembership,
   bootstrapUserCore,
   createTreasury,
-  getTreasuryById,
+  getLocalModeTreasury,
   listTreasuriesForUser,
   schema,
 } from '@tc/db';
@@ -144,13 +144,12 @@ export async function POST(req: Request) {
             },
           });
         } else {
-          // Local mode — attach to the seed treasury. The seed row was
-          // written by `pnpm db:seed-m2`; missing it is an operator
-          // setup error.
-          const seed = await getTreasuryById(tx, env.SEED_TREASURY_ID);
-          if (!seed) {
-            throw new Error(`SEED_TREASURY_ID ${env.SEED_TREASURY_ID} does not exist`);
-          }
+          // Local mode — attach to the unique signer_backend=local row.
+          // PR 4 swapped the previous `SEED_TREASURY_ID` env-keyed lookup
+          // for a runtime query. `getLocalModeTreasury` throws structured
+          // errors (missing / ambiguous) that the outer catch turns into
+          // 500s with operator-actionable detail.
+          const seed = await getLocalModeTreasury(tx);
           treasuryId = seed.id;
           treasuryName = seed.name;
           walletAddress = seed.walletAddress;
