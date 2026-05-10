@@ -9,9 +9,10 @@ import {
   transitionAction,
 } from '@tc/db';
 import { type PolicyDecision, deriveRebalanceLegs } from '@tc/policy';
-import { type SignerConfig, createSigner } from '@tc/signer';
+import type { Signer } from '@tc/signer';
 import type { ExecuteResult, ProposedAction } from '@tc/types';
 import { editApprovalCardWithExecution } from './bot';
+import { type BaseSignerConfig, createSignerFactory } from './signer-factory';
 
 type AllowDecision = Extract<PolicyDecision, { kind: 'allow' }>;
 
@@ -31,37 +32,68 @@ async function safeEditCard(
 import { db } from './db';
 import { env } from './env';
 
-function buildSignerConfig(): SignerConfig {
-  // Tagged switch — TS exhaustiveness fails the build if a new
-  // SIGNER_BACKEND variant lands without a matching case.
-  switch (env.SIGNER_BACKEND) {
-    case 'local':
-      return {
-        backend: 'local',
-        rpcUrl: env.SOLANA_RPC_URL,
-        keypairPath: env.SOLANA_KEYPAIR_PATH,
-        commitment: env.SIGNER_COMMITMENT,
-        confirmTimeoutMs: env.SIGNER_CONFIRM_TIMEOUT_MS,
-      };
-    case 'turnkey':
-      return {
-        backend: 'turnkey',
-        rpcUrl: env.SOLANA_RPC_URL,
-        turnkey: {
-          apiPublicKey: env.TURNKEY_API_PUBLIC_KEY,
-          apiPrivateKey: env.TURNKEY_API_PRIVATE_KEY,
-          baseUrl: env.TURNKEY_BASE_URL,
-          organizationId: env.TURNKEY_ORGANIZATION_ID,
-          signWith: env.TURNKEY_SIGN_WITH,
-        },
-        commitment: env.SIGNER_COMMITMENT,
-        confirmTimeoutMs: env.SIGNER_CONFIRM_TIMEOUT_MS,
-        signTimeoutMs: env.SIGNER_SIGN_TIMEOUT_MS,
-      };
+const signerFactory = createSignerFactory({ db, baseConfig: buildBaseSignerConfig() });
+
+// Look up (or build + cache) the per-treasury signer. On any factory error
+// (TreasuryNotFound, TurnkeyTreasuryMalformed, LocalKeypairMismatch,
+// WorkerBackendMismatch, or anything else), terminally fail the row with
+// a clear reason and return null. The caller `continue`s to the next row.
+async function resolveSignerOrFail(actionId: string, treasuryId: string): Promise<Signer | null> {
+  try {
+    return await signerFactory.getSigner(treasuryId);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const error = `signer init failed: ${message}`;
+    try {
+      const updated = await transitionAction(db, {
+        id: actionId,
+        from: 'executing',
+        to: 'failed',
+        actor: 'signer',
+        payload: { error },
+      });
+      console.warn(`[executor] action ${actionId} failed: ${error}`);
+      await safeEditCard(updated, { kind: 'failure', error });
+    } catch (transitionErr) {
+      // If the row vanished or its state already moved (peer worker, manual
+      // edit), there's nothing useful left to do — log and move on.
+      if (
+        !(
+          transitionErr instanceof TransitionConflictError ||
+          transitionErr instanceof IllegalTransitionError
+        )
+      ) {
+        console.error(
+          `[executor] action ${actionId} signer init failed AND fail-transition failed:`,
+          transitionErr,
+        );
+      }
+    }
+    return null;
   }
 }
 
-const signer = createSigner(buildSignerConfig());
+function buildBaseSignerConfig(): BaseSignerConfig {
+  // Shared subset (rpc, commitment, timeouts) plus the per-backend "parent"
+  // creds. Per-treasury organizationId + signWith come from the treasuries
+  // row inside the factory.
+  const base: BaseSignerConfig = {
+    rpcUrl: env.SOLANA_RPC_URL,
+    commitment: env.SIGNER_COMMITMENT,
+    confirmTimeoutMs: env.SIGNER_CONFIRM_TIMEOUT_MS,
+    signTimeoutMs: env.SIGNER_SIGN_TIMEOUT_MS,
+  };
+  if (env.SIGNER_BACKEND === 'local') {
+    base.localKeypairPath = env.SOLANA_KEYPAIR_PATH;
+  } else {
+    base.turnkeyParent = {
+      apiPublicKey: env.TURNKEY_API_PUBLIC_KEY,
+      apiPrivateKey: env.TURNKEY_API_PRIVATE_KEY,
+      baseUrl: env.TURNKEY_BASE_URL,
+    };
+  }
+  return base;
+}
 
 // Persist the leg-2 (deposit / single-leg) signature into `tx_signature`.
 // Throws if the CAS-on-NULL loses, telling the signer to abort before
@@ -84,6 +116,7 @@ async function persistIntermediateSignature(actionId: string, sig: string): Prom
 // row to executed/failed based on this result, identical to the single-leg
 // path. `actionId` is used only for log lines.
 async function driveRebalanceFromStart(
+  signer: Signer,
   actionId: string,
   decision: AllowDecision,
 ): Promise<ExecuteResult> {
@@ -101,13 +134,14 @@ async function driveRebalanceFromStart(
   console.log(
     `[executor] action ${actionId} rebalance leg-1 confirmed ${leg1.txSignature}, executing leg-2 (deposit)`,
   );
-  return driveRebalanceLeg2(actionId, decision);
+  return driveRebalanceLeg2(signer, actionId, decision);
 }
 
 // Run only leg-2 (deposit). Used both as the second half of
 // driveRebalanceFromStart and from boot recovery when leg-1 already
 // confirmed in a prior run but leg-2 never started.
 async function driveRebalanceLeg2(
+  signer: Signer,
   actionId: string,
   decision: AllowDecision,
 ): Promise<ExecuteResult> {
@@ -130,12 +164,13 @@ async function driveRebalanceLeg2(
 // Drive the signer for an `allow` decision. For rebalance, walks both legs;
 // for single-leg actions, behaves exactly as the original tick() did.
 async function executeDecision(
+  signer: Signer,
   actionId: string,
   decision: AllowDecision,
   payload: ProposedAction,
 ): Promise<ExecuteResult> {
   if (payload.kind === 'rebalance') {
-    return driveRebalanceFromStart(actionId, decision);
+    return driveRebalanceFromStart(signer, actionId, decision);
   }
   return signer.executeApproved(decision, {
     onSignature: (sig) => persistFinalSignature(actionId, sig),
@@ -191,33 +226,12 @@ async function tick(): Promise<void> {
         claimedForExecution = true;
         console.log(`[executor] action ${row.id} claimed, submitting`);
 
-        // M2 PR 2 transition guard: per-treasury Turnkey provisioning is
-        // live (web side) but the worker still routes all signing through
-        // a single seed wallet. Any action whose `treasuryId` isn't the
-        // seed would otherwise fail downstream at the wallet-mismatch
-        // check in packages/signer/src/index.ts:227-232 with an opaque
-        // "wallet mismatch" error — fail-fast here with a clear reason
-        // instead. PR 3 deletes this block as a single hunk when the
-        // per-treasury signer factory ships.
-        // TODO(2-PR3): remove when per-treasury signer factory ships.
-        if (claimed.treasuryId !== env.SEED_TREASURY_ID) {
-          const error = 'signer not yet wired for treasury';
-          const updated = await transitionAction(db, {
-            id: row.id,
-            from: 'executing',
-            to: 'failed',
-            actor: 'signer',
-            payload: { error },
-          });
-          console.warn(
-            `[executor] action ${row.id} failed: non-seed treasury ${claimed.treasuryId}`,
-          );
-          // Auto-approved actions skip silently inside safeEditCard
-          // (no telegramMessageId); human-approved rows get their card
-          // flipped to the failure state so it doesn't sit at "approved".
-          await safeEditCard(updated, { kind: 'failure', error });
-          continue;
-        }
+        // Resolve the per-treasury signer. Misses (treasury vanished, malformed
+        // turnkey row, local keypair / wallet_address mismatch, worker-backend
+        // mismatch) terminally fail the row with a clear reason; auto-approved
+        // rows skip the card edit silently inside safeEditCard.
+        const signer = await resolveSignerOrFail(row.id, claimed.treasuryId);
+        if (!signer) continue;
 
         // Authorization came from either a policy `allow` decision (auto-
         // approval at insert time) or a Telegram allowlisted approver
@@ -228,7 +242,7 @@ async function tick(): Promise<void> {
         // `allow`-shaped decision here from `payload` to satisfy the Signer's
         // type contract.
         const decision: AllowDecision = { kind: 'allow', action: claimed.payload };
-        result = await executeDecision(row.id, decision, claimed.payload);
+        result = await executeDecision(signer, row.id, decision, claimed.payload);
 
         if (result.kind === 'pending') {
           // Tx broadcast but cluster status unsettled; do NOT terminally
@@ -345,6 +359,13 @@ async function recoverInFlight(): Promise<void> {
 
   for (const row of stuck) {
     try {
+      // Resolve the per-treasury signer once per row. Cache hits make this
+      // cheap; cold misses build the signer for that treasury before any
+      // signature lookup. A factory failure terminally fails the row (same
+      // shape as the tick path) and we move on.
+      const signer = await resolveSignerOrFail(row.id, row.treasuryId);
+      if (!signer) continue;
+
       // Rebalance with leg-1 sig set but leg-2 missing: worker crashed
       // between leg-1 confirm and leg-2 broadcast. Look up leg-1 status — if
       // confirmed, drive leg-2 to completion; otherwise treat the
@@ -382,7 +403,7 @@ async function recoverInFlight(): Promise<void> {
           `[executor] action ${row.id} leg-1 confirmed; resuming rebalance leg-2 (deposit)`,
         );
         const decision: AllowDecision = { kind: 'allow', action: row.payload };
-        const leg2 = await driveRebalanceLeg2(row.id, decision);
+        const leg2 = await driveRebalanceLeg2(signer, row.id, decision);
         if (leg2.kind === 'pending') {
           console.warn(
             `[executor] action ${row.id} leg-2 pending in recovery: ${leg2.reason} ${leg2.txSignature}`,

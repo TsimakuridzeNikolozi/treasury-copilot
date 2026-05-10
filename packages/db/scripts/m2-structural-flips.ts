@@ -26,6 +26,7 @@ import { sql } from 'drizzle-orm';
 
 // biome-ignore lint/suspicious/noExplicitAny: takes a drizzle Db or tx
 export async function applyM2StructuralFlips(db: any): Promise<void> {
+  // biome-ignore lint/suspicious/noExplicitAny: drizzle tx, mirror of outer signature
   await db.transaction(async (tx: any) => {
     // policies: drop singleton CHECK, drop id PK, promote treasury_id PK,
     // drop legacy id column.

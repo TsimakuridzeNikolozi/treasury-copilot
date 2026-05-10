@@ -64,10 +64,23 @@ export const env = createEnv({
   client: {
     NEXT_PUBLIC_APP_URL: publicAppUrlSchema,
     NEXT_PUBLIC_PRIVY_APP_ID: publicPrivyAppIdSchema,
+    // The Telegram bot's @username (without the leading @). Surfaced to
+    // /settings → Telegram so users can copy it when adding the bot to
+    // their approval group. Optional — when unset the setup guide falls
+    // back to a generic instruction. Public because the @username is
+    // public on Telegram anyway; only the token needs to stay private.
+    NEXT_PUBLIC_TELEGRAM_BOT_USERNAME: z
+      .string()
+      .regex(
+        /^[A-Za-z][A-Za-z0-9_]{4,31}$/,
+        'Telegram bot @username (no leading @): 5–32 chars, letter-led, alphanumeric + _',
+      )
+      .optional(),
   },
   experimental__runtimeEnv: {
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
     NEXT_PUBLIC_PRIVY_APP_ID: process.env.NEXT_PUBLIC_PRIVY_APP_ID,
+    NEXT_PUBLIC_TELEGRAM_BOT_USERNAME: process.env.NEXT_PUBLIC_TELEGRAM_BOT_USERNAME,
   },
   // `skipValidation` is the documented escape hatch for build contexts that
   // can't supply env (e.g., baking a CI Docker image where secrets are

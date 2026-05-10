@@ -2,6 +2,8 @@ import {
   type ApprovalAttribution,
   type ProposedActionRow,
   TransitionConflictError,
+  getActionById,
+  getTreasuryForRouting,
   recordApproval,
 } from '@tc/db';
 import type { ExecuteResult } from '@tc/types';
@@ -9,48 +11,28 @@ import { Bot, InlineKeyboard } from 'grammy';
 import { db } from './db';
 import { env } from './env';
 
-const APPROVERS = new Set(env.APPROVER_TELEGRAM_IDS.split(',').map(Number));
-const APPROVAL_CHAT_ID = env.TELEGRAM_APPROVAL_CHAT_ID;
-
-function isApprover(userId: number): boolean {
-  return APPROVERS.has(userId);
-}
-
 export const bot = new Bot(env.TELEGRAM_BOT_TOKEN);
 
-// Allowlist + chat scoping middleware. Run before any handler.
-//
-// Callback queries (button clicks) are restricted to the approver allowlist —
-// anyone else clicking a button gets an alert and the handler doesn't run.
-//
-// Plain messages from chats other than the configured approval chat are
-// silently dropped. We don't reply with "not authorized" because that would
-// confirm the bot exists to a stranger who happened to find it.
-bot.use(async (ctx, next) => {
-  if (ctx.callbackQuery) {
-    const userId = ctx.from?.id;
-    if (!userId || !isApprover(userId)) {
-      await ctx.answerCallbackQuery({ text: 'Not authorized', show_alert: true });
-      return;
-    }
-    if (String(ctx.chat?.id) !== APPROVAL_CHAT_ID) {
-      await ctx.answerCallbackQuery({ text: 'Not authorized', show_alert: true });
-      return;
-    }
-  }
-  if (ctx.message && String(ctx.chat?.id) !== APPROVAL_CHAT_ID) {
-    return;
-  }
-  await next();
-});
-
-bot.command('ping', (ctx) => ctx.reply('pong'));
+// `/whoami` is intentionally unscoped — operators legitimately use it during
+// onboarding to find their numeric Telegram id (which they'll then paste into
+// /settings → Telegram → Approvers). Replying with the user's own id to the
+// user who asked isn't an info leak; finding the bot in the directory and
+// running it is the same as visiting @userinfobot. We removed `/ping` because
+// `pong` had no operator value and was the only command that confirmed the
+// bot exists to a stranger without giving them anything they didn't ask for.
 bot.command('whoami', (ctx) => ctx.reply(`Your Telegram id: ${ctx.from?.id}`));
 
 // UUID v4 shape — action ids are uuid-defaultRandom in the schema. Tightening
 // the regex means a malformed callback (we change the keyboard generator,
 // someone pokes the bot manually) never reaches recordApproval as a no-op DB
 // miss — it's silently rejected as an unmatched update instead.
+//
+// Per-callback authorization (PR 3): the bot was previously gated by a
+// global APPROVER_TELEGRAM_IDS allowlist. Routing is now per-treasury, so
+// authorization runs *inside* the handler — load the action row, look up
+// the treasury's approver list, accept the click only if the clicker is in
+// it. A single bot instance can serve multiple treasuries with disjoint
+// approver groups.
 bot.callbackQuery(
   /^(approve|deny):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/,
   async (ctx) => {
@@ -60,20 +42,56 @@ bot.callbackQuery(
     const approverId = ctx.from?.id;
     if (!approverId) return;
 
+    // Look up the action's treasury_id, then the treasury's approver list.
+    // The original handler skipped this read and authorized against a
+    // module-level set; with per-treasury routing we need the row first.
+    const action = await getActionById(db, actionId);
+    if (!action) {
+      await ctx.answerCallbackQuery({ text: 'Action not found', show_alert: true });
+      return;
+    }
+    const cfg = await getTreasuryForRouting(db, action.treasuryId);
+    if (!cfg) {
+      // Treasury vanished between proposal and click. FKs (NO ACTION) make
+      // this impossible in M2 — log it so an operator catches the
+      // surprise during M3 when delete UX lands. The toast intentionally
+      // matches the unauthorized case (avoids leaking treasury existence).
+      console.error(
+        `[bot] treasury ${action.treasuryId} not found for action ${actionId}; rejecting click`,
+      );
+      await ctx.answerCallbackQuery({
+        text: 'Not authorized for this treasury',
+        show_alert: true,
+      });
+      return;
+    }
+    // Compare as strings to match the storage shape: telegram_approver_ids
+    // is text[]. Telegram user ids fit in JS Number safely today, but the
+    // storage shape is the contract — Set lookup is also O(1) vs. parse +
+    // filter + linear scan.
+    const approverIds = new Set(cfg.telegramApproverIds);
+    if (!approverIds.has(String(approverId))) {
+      await ctx.answerCallbackQuery({
+        text: 'Not authorized for this treasury',
+        show_alert: true,
+      });
+      return;
+    }
+
     // Acknowledge IMMEDIATELY — Telegram shows a spinner on the button until
     // the callback is answered. Do this before the DB work so a slow query
     // doesn't make the UI feel stuck.
     await ctx.answerCallbackQuery({ text: `Recording ${decision}…` });
 
     try {
-      const { action } = await recordApproval(db, {
+      const { action: updated } = await recordApproval(db, {
         actionId,
         approverTelegramId: String(approverId),
         decision,
         ...(ctx.from?.username ? { meta: { username: ctx.from.username } } : {}),
       });
 
-      await ctx.editMessageText(formatResolved(action, decision, ctx.from?.username, approverId), {
+      await ctx.editMessageText(formatResolved(updated, decision, ctx.from?.username, approverId), {
         parse_mode: 'HTML',
       });
     } catch (err) {
@@ -185,16 +203,44 @@ function formatExecuted(
 
 // --- public API used by the poller and the executor ---
 
-export async function postApprovalCard(row: ProposedActionRow): Promise<number> {
+// Set of treasury ids we've already warned about for missing chat config.
+// findPendingForTelegram filters those rows out at the query level, so this
+// path normally never fires — but it's a defense-in-depth log if a row
+// somehow slips through (race between query and update, future code change).
+// The Set bound is per-process: a worker reboot resets it, which is fine.
+const warnedNoChatTreasuries = new Set<string>();
+
+// Returns null when the treasury has no chat configured (poller short-circuits
+// without persisting a message id, row stays pending); otherwise the
+// (messageId, chatId) pair the poller snapshots onto the row via
+// setTelegramRouting.
+export async function postApprovalCard(
+  row: ProposedActionRow,
+): Promise<{ messageId: number; chatId: string } | null> {
+  const cfg = await getTreasuryForRouting(db, row.treasuryId);
+  const chatId = cfg?.telegramChatId ?? null;
+  if (!chatId) {
+    if (!warnedNoChatTreasuries.has(row.treasuryId)) {
+      console.warn(
+        `[bot] treasury ${row.treasuryId} has no telegram_chat_id; action ${row.id} stays pending until configured`,
+      );
+      warnedNoChatTreasuries.add(row.treasuryId);
+    }
+    return null;
+  }
+  // Owner just configured a chat after a previous miss — clear the warned
+  // flag so a subsequent reconfig-to-null logs once again.
+  warnedNoChatTreasuries.delete(row.treasuryId);
+
   const keyboard = new InlineKeyboard()
     .text('✅ Approve', `approve:${row.id}`)
     .text('❌ Deny', `deny:${row.id}`);
 
-  const msg = await bot.api.sendMessage(APPROVAL_CHAT_ID, formatPending(row), {
+  const msg = await bot.api.sendMessage(chatId, formatPending(row), {
     parse_mode: 'HTML',
     reply_markup: keyboard,
   });
-  return msg.message_id;
+  return { messageId: msg.message_id, chatId };
 }
 
 export async function editApprovalCardWithExecution(
@@ -202,18 +248,23 @@ export async function editApprovalCardWithExecution(
   result: TerminalExecuteResult,
   attribution: ApprovalAttribution | null,
 ): Promise<void> {
-  if (!row.telegramMessageId) {
+  if (!row.telegramMessageId || !row.telegramChatId) {
     // Auto-approved rows (policy `allow`) never get a Telegram card — they go
     // straight from insert to status=approved. Skip silently. A missing id on
     // a `requires_approval` row is a real bug (manual DB edit, or a Telegram
     // approval path nobody told bot.ts about), so still surface that case.
     if (row.policyDecision?.kind !== 'allow') {
-      console.warn(`[bot] action ${row.id} reached executor with no telegramMessageId`);
+      console.warn(
+        `[bot] action ${row.id} reached executor with no telegram routing (messageId=${row.telegramMessageId}, chatId=${row.telegramChatId})`,
+      );
     }
     return;
   }
+  // Use the snapshotted chat id (PR 3): the row carries the chat the message
+  // was originally posted to, so an owner reconfiguring the treasury's
+  // chat_id mid-flight doesn't break this edit.
   await bot.api.editMessageText(
-    APPROVAL_CHAT_ID,
+    row.telegramChatId,
     row.telegramMessageId,
     formatExecuted(row, result, attribution),
     { parse_mode: 'HTML' },

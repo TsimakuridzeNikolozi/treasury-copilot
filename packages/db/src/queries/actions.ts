@@ -1,5 +1,5 @@
 import type { PolicyDecision, ProposedAction } from '@tc/types';
-import { and, asc, desc, eq, gte, inArray, isNull, like, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, sql } from 'drizzle-orm';
 import type { Db } from '../client';
 import {
   type ApprovalRow,
@@ -10,6 +10,7 @@ import {
   approvals,
   auditLogs,
   proposedActions,
+  treasuries,
 } from '../schema';
 
 export type ActionStatus = ProposedActionRow['status'];
@@ -301,13 +302,28 @@ export async function getApprovalAttribution(
 //
 // System-wide: same reason as findApprovedForExecution. Each row carries
 // treasury_id so postApprovalCard can look up the right chat config.
+//
+// Excludes rows whose treasury has no telegram_chat_id configured. Without
+// the JOIN, a treasury whose owner hasn't set up Telegram routing yet would
+// re-surface every poll tick — the bot would log "no chat id" each time.
+// The filter here means those rows stay parked silently until the owner
+// sets a chat id via /settings, at which point they immediately become
+// eligible.
 export async function findPendingForTelegram(db: Db, limit = 25): Promise<ProposedActionRow[]> {
-  return db
-    .select()
+  const rows = await db
+    .select({ action: proposedActions })
     .from(proposedActions)
-    .where(and(eq(proposedActions.status, 'pending'), isNull(proposedActions.telegramMessageId)))
+    .innerJoin(treasuries, eq(treasuries.id, proposedActions.treasuryId))
+    .where(
+      and(
+        eq(proposedActions.status, 'pending'),
+        isNull(proposedActions.telegramMessageId),
+        isNotNull(treasuries.telegramChatId),
+      ),
+    )
     .orderBy(asc(proposedActions.createdAt))
     .limit(limit);
+  return rows.map((r) => r.action);
 }
 
 // Compare-and-set: only writes the signature when the row is `executing` and
@@ -315,7 +331,7 @@ export async function findPendingForTelegram(db: Db, limit = 25): Promise<Propos
 // sendRawTransaction(). The status guard means the executor's atomic claim
 // must have already succeeded; the IS NULL guard means a duplicate persist
 // (e.g., a retry inside the same tick) can't overwrite. Mirrors the idempotency
-// shape of setTelegramMessageId.
+// shape of setTelegramRouting.
 export async function setActionTxSignature(
   db: Db,
   actionId: string,
@@ -374,20 +390,40 @@ export async function findInFlightExecutions(db: Db): Promise<ProposedActionRow[
     .orderBy(asc(proposedActions.createdAt));
 }
 
-// Compare-and-set: only stamps telegramMessageId when it's still NULL, so a
-// concurrent poster (or a retry after a successful post) can't overwrite an
-// already-recorded message id. Returns true if this call won the race.
-export async function setTelegramMessageId(
+// Compare-and-set: stamps telegramMessageId AND the snapshotted chat id when
+// the message id is still NULL. The chat id is snapshotted (not read fresh
+// from the treasury at edit time) so a mid-flight reconfig of
+// treasuries.telegram_chat_id doesn't break post-execution edits — the
+// edit must target the chat where the original message lives.
+//
+// Returns true if this call won the race (no concurrent poster beat us).
+export interface SetTelegramRoutingInput {
+  messageId: number;
+  chatId: string;
+}
+
+export async function setTelegramRouting(
   db: Db,
   actionId: string,
-  telegramMessageId: number,
+  routing: SetTelegramRoutingInput,
 ): Promise<boolean> {
   const updated = await db
     .update(proposedActions)
-    .set({ telegramMessageId })
+    .set({ telegramMessageId: routing.messageId, telegramChatId: routing.chatId })
     .where(and(eq(proposedActions.id, actionId), isNull(proposedActions.telegramMessageId)))
     .returning({ id: proposedActions.id });
   return updated.length > 0;
+}
+
+// Used by the bot's callback handler to look up the action's treasury_id
+// before authorizing the click against that treasury's approver allowlist.
+// Without this read, the handler would have to authorize against a stale
+// module-level allowlist before recording the approval.
+export async function getActionById(db: Db, actionId: string): Promise<ProposedActionRow | null> {
+  const row = await db.query.proposedActions.findFirst({
+    where: eq(proposedActions.id, actionId),
+  });
+  return row ?? null;
 }
 
 export interface RecordApprovalInput {

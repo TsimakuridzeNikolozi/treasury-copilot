@@ -1,4 +1,4 @@
-import { findPendingForTelegram, setTelegramMessageId } from '@tc/db';
+import { findPendingForTelegram, setTelegramRouting } from '@tc/db';
 import { postApprovalCard } from './bot';
 import { db } from './db';
 import { env } from './env';
@@ -19,8 +19,13 @@ async function tick(): Promise<void> {
     const pending = await findPendingForTelegram(db);
     for (const row of pending) {
       try {
-        const messageId = await postApprovalCard(row);
-        const stamped = await setTelegramMessageId(db, row.id, messageId);
+        const posted = await postApprovalCard(row);
+        // null = treasury has no chat_id configured (the row was filtered
+        // out by findPendingForTelegram already, but if a race lets one
+        // through, postApprovalCard still short-circuits). Row stays
+        // pending until the owner configures Telegram routing in /settings.
+        if (!posted) continue;
+        const stamped = await setTelegramRouting(db, row.id, posted);
         if (!stamped) {
           console.warn(
             `[poller] action ${row.id} already had a telegramMessageId; possible duplicate post`,

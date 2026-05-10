@@ -9,7 +9,9 @@ import * as schema from '../schema';
 import {
   IllegalTransitionError,
   TransitionConflictError,
+  findPendingForTelegram,
   insertProposedAction,
+  setTelegramRouting,
   sumAutoApprovedSince,
   transitionAction,
 } from './actions';
@@ -263,6 +265,98 @@ describe.skipIf(SKIP)('queries/actions', () => {
       expect(ownTotal).toBe('100.000000');
       const otherTotal = await sumAutoApprovedSince(db, otherId, new Date(Date.now() - 60_000));
       expect(otherTotal).toBe('500.000000');
+    });
+  });
+
+  describe('setTelegramRouting', () => {
+    it('writes both message id and snapshotted chat id', async () => {
+      const action = deposit('5000');
+      const decision: PolicyDecision = { kind: 'requires_approval', reason: 'over threshold' };
+      const row = await insertProposedAction(db, { action, decision, proposedBy: 's' });
+      expect(row.status).toBe('pending');
+
+      const ok = await setTelegramRouting(db, row.id, { messageId: 12345, chatId: '-1001' });
+      expect(ok).toBe(true);
+
+      const refreshed = await db.query.proposedActions.findFirst({
+        where: eq(schema.proposedActions.id, row.id),
+      });
+      expect(refreshed?.telegramMessageId).toBe(12345);
+      expect(refreshed?.telegramChatId).toBe('-1001');
+    });
+
+    it('is idempotent on a stamped row (returns false, leaves values intact)', async () => {
+      const action = deposit('5000');
+      const decision: PolicyDecision = { kind: 'requires_approval', reason: 'over threshold' };
+      const row = await insertProposedAction(db, { action, decision, proposedBy: 's' });
+
+      const first = await setTelegramRouting(db, row.id, { messageId: 12345, chatId: '-1001' });
+      expect(first).toBe(true);
+      const second = await setTelegramRouting(db, row.id, { messageId: 99, chatId: '-2002' });
+      expect(second).toBe(false);
+
+      const refreshed = await db.query.proposedActions.findFirst({
+        where: eq(schema.proposedActions.id, row.id),
+      });
+      expect(refreshed?.telegramMessageId).toBe(12345);
+      expect(refreshed?.telegramChatId).toBe('-1001');
+    });
+  });
+
+  describe('findPendingForTelegram', () => {
+    it('excludes pending rows whose treasury has no telegram_chat_id', async () => {
+      // The shared TEST_TREASURY has telegramChatId=null by default — perfect.
+      const action = deposit('5000');
+      const decision: PolicyDecision = { kind: 'requires_approval', reason: 'over threshold' };
+      const row = await insertProposedAction(db, { action, decision, proposedBy: 's' });
+      expect(row.status).toBe('pending');
+
+      const pending = await findPendingForTelegram(db);
+      expect(pending.find((p) => p.id === row.id)).toBeUndefined();
+    });
+
+    it('includes pending rows once the treasury has a chat id configured', async () => {
+      const action = deposit('5000');
+      const decision: PolicyDecision = { kind: 'requires_approval', reason: 'over threshold' };
+      const row = await insertProposedAction(db, { action, decision, proposedBy: 's' });
+
+      // Configure the test treasury with a chat id; the same row should now
+      // surface in the poller's query without any further mutation on the
+      // action row itself.
+      await db
+        .update(schema.treasuries)
+        .set({ telegramChatId: '-1001234567890' })
+        .where(eq(schema.treasuries.id, TEST_TREASURY_ID));
+      try {
+        const pending = await findPendingForTelegram(db);
+        expect(pending.find((p) => p.id === row.id)).toBeDefined();
+      } finally {
+        // Reset for the next test in the suite.
+        await db
+          .update(schema.treasuries)
+          .set({ telegramChatId: null })
+          .where(eq(schema.treasuries.id, TEST_TREASURY_ID));
+      }
+    });
+
+    it('excludes rows that already have a telegram_message_id', async () => {
+      const action = deposit('5000');
+      const decision: PolicyDecision = { kind: 'requires_approval', reason: 'over threshold' };
+      const row = await insertProposedAction(db, { action, decision, proposedBy: 's' });
+      await db
+        .update(schema.treasuries)
+        .set({ telegramChatId: '-1001234567890' })
+        .where(eq(schema.treasuries.id, TEST_TREASURY_ID));
+      try {
+        await setTelegramRouting(db, row.id, { messageId: 1, chatId: '-1001234567890' });
+        const pending = await findPendingForTelegram(db);
+        expect(pending.find((p) => p.id === row.id)).toBeUndefined();
+      } finally {
+        await db
+          .update(schema.treasuries)
+          .set({ telegramChatId: null })
+          .where(eq(schema.treasuries.id, TEST_TREASURY_ID));
+      }
     });
   });
 });
