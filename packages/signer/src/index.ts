@@ -28,6 +28,10 @@ import { createLocalKeypairTreasurySigner } from './wallet';
 // — only the policy engine can produce an `allow` decision, and only `allow`
 // can be passed here.
 export interface Signer {
+  // Base58 of the treasury wallet this signer holds keys for. Exposed so the
+  // worker's per-treasury factory can verify (in local mode) that the loaded
+  // keypair matches the treasury row's wallet_address before caching.
+  treasuryAddress: string;
   executeApproved(
     decision: Extract<PolicyDecision, { kind: 'allow' }>,
     opts: ExecuteOpts,
@@ -204,6 +208,7 @@ export function createSigner(config: SignerConfig): Signer {
   const treasuryPubkey: PublicKey = treasurySigner.publicKey;
 
   return {
+    treasuryAddress,
     async executeApproved(decision, opts) {
       const action = decision.action;
 

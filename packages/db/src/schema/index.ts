@@ -139,6 +139,14 @@ export const proposedActions = pgTable(
     proposedBy: text('proposed_by').notNull(),
     policyDecision: jsonb('policy_decision').$type<PolicyDecision>(),
     telegramMessageId: integer('telegram_message_id'),
+    // Snapshotted from treasuries.telegram_chat_id at post time. Bot reads
+    // this — not the latest treasury config — when editing the card after
+    // execution. Without it, an owner reconfiguring the chat mid-flight
+    // would silently break post-execution edits (the message_id only exists
+    // in the original chat). Nullable: rows that were never posted (auto-
+    // approved actions, or pending rows when the treasury had no chat
+    // configured) leave it NULL.
+    telegramChatId: text('telegram_chat_id'),
     // Persisted between sign and submit so a crash mid-broadcast can be
     // recovered by re-confirming the signature rather than re-submitting.
     // For rebalance actions this is the leg-2 (deposit) signature; the

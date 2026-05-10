@@ -58,7 +58,7 @@ The seed script auto-loads `apps/web/.env.local` and `apps/worker/.env` (already
 
 ### M2 PR 2 env additions
 
-PR 2 adds `SIGNER_BACKEND` (mirrors the worker) and three optional `TURNKEY_PARENT_*` vars to web env, plus `SEED_TREASURY_ID` to worker env:
+PR 2 adds `SIGNER_BACKEND` (mirrors the worker) and three optional `TURNKEY_PARENT_*` vars to web env:
 
 ```bash
 # apps/web/.env.local — required when SIGNER_BACKEND=turnkey
@@ -66,12 +66,33 @@ SIGNER_BACKEND=local            # or turnkey
 TURNKEY_PARENT_ORG_ID=…         # parent org UUID (only for turnkey mode)
 TURNKEY_PARENT_API_PUBLIC_KEY=… # P-256 hex (66 chars; leading 0x tolerated)
 TURNKEY_PARENT_API_PRIVATE_KEY=… # P-256 hex (64 chars)
-
-# apps/worker/.env — required for the PR 2 transition guard
-SEED_TREASURY_ID=…              # same UUID as web; printed by db:seed-m2
 ```
 
-The web env enforces the cross-field rule "all three TURNKEY_PARENT_* are required when SIGNER_BACKEND=turnkey" via a Zod refinement at module load. PR 3 removes `SEED_TREASURY_ID` from worker env; PR 4 removes it from web env.
+The web env enforces the cross-field rule "all three TURNKEY_PARENT_* are required when SIGNER_BACKEND=turnkey" via a Zod refinement at module load.
+
+### M2 PR 3 upgrade flow (one-time)
+
+PR 3 ships the per-treasury signer factory and per-treasury Telegram routing. After pulling:
+
+```bash
+pnpm db:migrate         # applies 0007 — adds proposed_actions.telegram_chat_id snapshot column
+
+# apps/worker/.env — REMOVE these (now unreferenced; the worker won't boot if they're set
+# under a strict env schema that flags unknown keys, and they actively misdirect operators):
+#   SEED_TREASURY_ID                (PR 2 guard is gone)
+#   TELEGRAM_APPROVAL_CHAT_ID       (replaced by per-treasury treasuries.telegram_chat_id)
+#   APPROVER_TELEGRAM_IDS           (replaced by treasuries.telegram_approver_ids)
+#   TURNKEY_ORGANIZATION_ID         (per-treasury — read from treasuries.turnkey_sub_org_id)
+#   TURNKEY_SIGN_WITH               (per-treasury — read from treasuries.wallet_address)
+
+# Set per-treasury chat id + approver ids via /settings → Telegram before
+# require-approval actions can post. Until configured, those rows park in
+# pending and are filtered out of the poller's queue at the SQL level.
+```
+
+Pre-PR-3 in-flight rows (`status=executing` at deploy time) execute correctly under the per-treasury factory but their original Telegram cards won't be edited because `proposed_actions.telegram_chat_id` is null on those rows. DB and on-chain outcomes are unaffected.
+
+PR 4 removes `TREASURY_PUBKEY_BASE58` and `SEED_TREASURY_ID` from web env (the latter is no longer used by any code path; it lingers as a setup nudge).
 
 ## Architecture
 
@@ -115,13 +136,24 @@ The web app gates `/chat`, `/settings`, and `/api/me/bootstrap` / `/api/treasury
 - **Body-vs-cookie 409 multi-tab safety.** Chat and policy PATCH requests carry `treasuryId` in the body; mismatch with the resolved active treasury returns 409 `active_treasury_changed`, and the client force-reloads to re-render against the new id. `no_active_treasury` 409 (mid-bootstrap or revoked-membership) sends the client to `/`.
 - **Logout cookie clear.** `POST /api/auth/logout` clears `tc_active_treasury` so user A's selection doesn't leak to user B on the same browser. Safe to call unauthenticated because the cookie is `SameSite=Lax`. Bearer-auth on every other new route is CSRF-immune by virtue of using a header rather than a cookie.
 
-#### M2 PR 2 transition state
+#### M2 PR 3 state — per-treasury signer + Telegram routing
 
-The web app is fully multi-tenant; the worker still routes all execution through the seed signer. A temporary guard in `apps/worker/src/executor.ts` (search `TODO(2-PR3)`) fail-fasts any action whose `treasury_id` isn't `SEED_TREASURY_ID` with reason `'signer not yet wired for treasury'`. PR 3 deletes this guard the same hour the per-treasury signer factory ships.
+The worker is now fully multi-tenant. `apps/worker/src/signer-factory.ts` exposes `createSignerFactory({ db, baseConfig })` returning an LRU keyed on `treasuryId` (default 100 entries; concurrent calls for the same id dedupe). Each cache miss reads the treasuries row via `getTreasuryForRouting`, validates it (turnkey rows must have `turnkey_sub_org_id`; local rows' keypair public key must equal `wallet_address`), and calls `createSigner(perTreasuryConfig)` to build a fresh high-level `Signer`. The factory throws structured errors — `TreasuryNotFound`, `TurnkeyTreasuryMalformed`, `LocalKeypairMismatch`, `WorkerBackendMismatch` — which the executor catches via `resolveSignerOrFail`, terminally failing the row with a clear reason. Both `tick()` (the main loop) and `recoverInFlight()` (the boot recovery sweep) route through the factory.
 
 **Stage-3 bootstrap failure (operator reconcile).** If stage 3's tx throws after Turnkey already returned a sub-org (turnkey mode), the route 500s and logs `orphaned subOrgId=…`. Operator drops the sub-org via the Turnkey console, user retries bootstrap. With the session lock in place this is the *only* orphan path; M3 adds an automatic reconciler.
 
 Policy lookup remains `getPolicy(db, treasuryId)` (`packages/db/src/queries/policies.ts`); falls back to `DEFAULT_POLICY` (still in `@tc/policy`) when the row is missing. Edits land via `PATCH /api/policy` and are atomically logged in `audit_logs` with kind `'policy_updated'` (`audit_logs.kind` is plain text, not an enum — new kinds are string literals at the call site).
+
+#### Per-treasury Telegram routing
+
+`treasuries.telegram_chat_id` and `treasuries.telegram_approver_ids` carry the per-treasury Telegram config. The bot reads them per-call via `getTreasuryForRouting`:
+
+- `postApprovalCard(row)` returns `{ messageId, chatId } | null`. Null when the treasury has no chat configured — `findPendingForTelegram` filters those rows at the SQL level (LEFT JOIN treasuries excluding null chat_id) so the poller doesn't loop on un-configured treasuries; an in-process `Set` in `bot.ts` warns once-per-boot if a row slips through (defense-in-depth against future race conditions).
+- The poller then calls `setTelegramRouting(db, actionId, posted)` which writes BOTH `proposed_actions.telegram_message_id` AND `proposed_actions.telegram_chat_id` (snapshot) under a compare-and-set guard.
+- The callback handler reads the action row first (`getActionById`), looks up the treasury config, and rejects clicks from users not in `telegram_approver_ids`. Only then does it call `recordApproval`.
+- `editApprovalCardWithExecution` uses the *snapshotted* `row.telegramChatId`, NOT the latest treasury config — so an owner reconfiguring `telegram_chat_id` mid-flight doesn't break post-execution edits.
+
+`PATCH /api/treasury/telegram-config` is the owner-only edit route; it's a thin shim over `updateTelegramConfig` in `packages/db/src/queries/treasuries.ts`, which writes the treasury row + an `audit_logs` row (`{ before, after }` payload) atomically. The route validates with the same Zod regexes the form mirrors client-side: numeric chat ids (group/user) or strict `@channel_username` (5-32 chars, letter-led, alphanumeric + `_`).
 
 ### AI provider abstraction
 
@@ -186,11 +218,9 @@ Biome only. **Do not add ESLint or Prettier.** Run `pnpm exec biome check --writ
 
 These are first-feature work, not setup. When asked to "add X", check this list — if it's here, the answer is "yes, that's phase-1 work, not a config tweak":
 
-- Per-treasury signer factory in the worker. PR 2 ships per-user Turnkey sub-orgs but the worker still signs through the seed wallet (with the `TODO(2-PR3)` guard in `executor.ts` fail-fasting non-seed actions). PR 3 wires an LRU per-treasury signer and removes the guard; PR 3 also drops the chat-id allowlist in `bot.ts` and adds per-treasury Telegram routing + `/api/treasury/telegram-config`.
-- Drop `TREASURY_PUBKEY_BASE58` from web env, `SEED_TREASURY_ID` from web env, legacy `TELEGRAM_*` from worker — **PR 4**, after PR 3 lands.
+- Drop `TREASURY_PUBKEY_BASE58` and `SEED_TREASURY_ID` from web env — **PR 4**, after PR 3 settles. (Worker env trims for both already shipped in PR 3.)
 - Multi-user-per-treasury, invitations, role expansion beyond `owner`, treasury rename / delete UX, Privy webhook for user-deleted lifecycle, automatic reconciler for stage-3 bootstrap failure, bootstrap rate limiting (Upstash/Redis-backed) — **M3**.
 - Protocol SDK coverage in `packages/protocols`: Kamino and Save are wired end-to-end (deposit + withdraw); Drift and Marginfi builders are still stubs
-- Telegram bot client (grammy) in `apps/worker/src/bot.ts`
 - CI workflows (`.github/workflows/`)
 - Vercel project and Railway service configuration
 

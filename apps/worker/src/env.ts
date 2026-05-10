@@ -1,26 +1,25 @@
 import {
   databaseUrlSchema,
   logLevelSchema,
-  seedTreasuryIdSchema,
   signerSignTimeoutMsSchema,
   solanaRpcUrlSchema,
   turnkeyApiPrivateKeySchema,
   turnkeyApiPublicKeySchema,
   turnkeyBaseUrlSchema,
-  turnkeyOrganizationIdSchema,
-  turnkeySignWithSchema,
 } from '@tc/env';
 import { z } from 'zod';
 
-// Comma-separated list of Telegram user ids allowed to approve/deny.
-// Stored as a string in env, parsed to a Set on boot in `bot.ts`.
-const approverIdsSchema = z
-  .string()
-  .min(1, 'APPROVER_TELEGRAM_IDS must list at least one user id')
-  .regex(/^\d+(,\d+)*$/, 'APPROVER_TELEGRAM_IDS must be comma-separated numeric ids');
-
 // Fields shared by every backend variant. Kept as a plain object so we can
 // `.merge` it into each discriminated-union member without repeating.
+//
+// PR 3 removed:
+//   - SEED_TREASURY_ID (the executor's per-treasury guard is gone now that
+//     the per-treasury signer factory ships).
+//   - TELEGRAM_APPROVAL_CHAT_ID + APPROVER_TELEGRAM_IDS (per-treasury
+//     routing is now driven by treasuries.telegram_chat_id +
+//     telegram_approver_ids; the bot reads them per-call).
+//   - TURNKEY_ORGANIZATION_ID + TURNKEY_SIGN_WITH (per-treasury values now
+//     come from treasuries.turnkey_sub_org_id + wallet_address).
 const baseEnv = z.object({
   DATABASE_URL: databaseUrlSchema,
   SOLANA_RPC_URL: solanaRpcUrlSchema,
@@ -28,18 +27,9 @@ const baseEnv = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 
   TELEGRAM_BOT_TOKEN: z.string().min(1, 'TELEGRAM_BOT_TOKEN is required'),
-  TELEGRAM_APPROVAL_CHAT_ID: z
-    .string()
-    .min(1, 'TELEGRAM_APPROVAL_CHAT_ID is required (chat where approval cards are posted)'),
-  APPROVER_TELEGRAM_IDS: approverIdsSchema,
 
   ACTION_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
   EXECUTOR_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(3000),
-
-  // PR 2 temporary: the executor compares each row's `treasury_id` against
-  // this and fail-fasts non-seed rows ("signer not yet wired for treasury").
-  // Removed in PR 3 when the per-treasury signer factory ships.
-  SEED_TREASURY_ID: seedTreasuryIdSchema,
 
   SIGNER_COMMITMENT: z.enum(['processed', 'confirmed', 'finalized']).default('confirmed'),
   SIGNER_CONFIRM_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
@@ -66,11 +56,11 @@ const schema = z.discriminatedUnion('SIGNER_BACKEND', [
     // Optional under turnkey — operators may keep their old keypair around
     // for emergency rollback to the local backend without re-editing env.
     SOLANA_KEYPAIR_PATH: z.string().optional(),
+    // Parent Turnkey API creds. Per-treasury organizationId + signWith come
+    // from the treasuries row at signer-build time (PR 3 onward).
     TURNKEY_API_PUBLIC_KEY: turnkeyApiPublicKeySchema,
     TURNKEY_API_PRIVATE_KEY: turnkeyApiPrivateKeySchema,
-    TURNKEY_ORGANIZATION_ID: turnkeyOrganizationIdSchema,
     TURNKEY_BASE_URL: turnkeyBaseUrlSchema,
-    TURNKEY_SIGN_WITH: turnkeySignWithSchema,
   }),
 ]);
 

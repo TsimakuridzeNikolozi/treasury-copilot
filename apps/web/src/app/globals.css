@@ -83,3 +83,34 @@
     @apply bg-background text-foreground font-sans antialiased;
   }
 }
+
+/* Chat "typing" indicator. Three dots in a row, each running this keyframe
+   with a staggered animation-delay so the wave reads as left → right.
+   Used by TypingIndicator in chat-client.tsx. Kept here (not inline)
+   because Tailwind's arbitrary `animate-[name_duration]` syntax needs the
+   keyframe to be globally registered.
+   `prefers-reduced-motion` swaps to a gentle opacity pulse instead — same
+   semantics, no movement. */
+@keyframes typing-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.35;
+  }
+  30% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  @keyframes typing-bounce {
+    0%,
+    100% {
+      opacity: 0.35;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+}

@@ -203,35 +203,55 @@ export function ChatClient({ activeTreasuryId }: ChatClientProps) {
                   </div>
                 </div>
               ) : (
-                messages.map((m, mi) => (
-                  <Message from={m.role} key={`${m.id}-${mi}`}>
-                    <MessageContent>
-                      {m.parts.map((part, i) => {
-                        const key = `${m.id}-${mi}-${i}`;
-                        if (part.type === 'text') {
-                          return (
-                            <p className="whitespace-pre-wrap" key={key}>
-                              {part.text}
-                            </p>
-                          );
-                        }
-                        if (part.type.startsWith('tool-')) {
-                          const tp = part as ToolUIPart;
-                          return (
-                            <Tool defaultOpen key={key}>
-                              <ToolHeader state={tp.state} type={tp.type} />
-                              <ToolContent>
-                                {tp.input !== undefined && <ToolInput input={tp.input} />}
-                                <ToolOutput errorText={tp.errorText} output={tp.output} />
-                              </ToolContent>
-                            </Tool>
-                          );
-                        }
-                        return null;
-                      })}
-                    </MessageContent>
-                  </Message>
-                ))
+                <>
+                  {messages.map((m, mi) => (
+                    <Message from={m.role} key={`${m.id}-${mi}`}>
+                      <MessageContent>
+                        {m.parts.map((part, i) => {
+                          const key = `${m.id}-${mi}-${i}`;
+                          if (part.type === 'text') {
+                            return (
+                              <p className="whitespace-pre-wrap" key={key}>
+                                {part.text}
+                              </p>
+                            );
+                          }
+                          if (part.type.startsWith('tool-')) {
+                            const tp = part as ToolUIPart;
+                            return (
+                              <Tool defaultOpen key={key}>
+                                <ToolHeader state={tp.state} type={tp.type} />
+                                <ToolContent>
+                                  {tp.input !== undefined && <ToolInput input={tp.input} />}
+                                  <ToolOutput errorText={tp.errorText} output={tp.output} />
+                                </ToolContent>
+                              </Tool>
+                            );
+                          }
+                          return null;
+                        })}
+                      </MessageContent>
+                    </Message>
+                  ))}
+
+                  {/* Typing indicator. Fills the gap between "user pressed
+                      send" and "first token / tool call streams in" — most
+                      chat UIs drop a placeholder bubble here so users see the
+                      assistant is working. We render it when status is
+                      'submitted' (request en route, no response yet) AND when
+                      'streaming' but the latest assistant message hasn't
+                      produced any visible parts yet (rare, brief — covers a
+                      stream that opens but pauses before the first chunk).
+                      Once any part lands, the message bubble itself takes
+                      over and this hides. */}
+                  {showTypingIndicator(status, messages) && (
+                    <Message from="assistant">
+                      <MessageContent>
+                        <TypingIndicator />
+                      </MessageContent>
+                    </Message>
+                  )}
+                </>
               )}
             </ConversationContent>
             <ConversationScrollButton />
@@ -277,5 +297,55 @@ export function ChatClient({ activeTreasuryId }: ChatClientProps) {
         </main>
       </div>
     </TooltipProvider>
+  );
+}
+
+// `useChat` exposes `status` as a string union from @ai-sdk/react. The two we
+// care about for the typing indicator are 'submitted' and 'streaming'; the
+// rest ('ready', 'error') don't render the indicator. Typed loosely here so
+// minor SDK version drift in the status enum doesn't break the component.
+type ChatStatus = 'submitted' | 'streaming' | 'ready' | 'error' | (string & {});
+type ChatMessage = { role: string; parts: { type: string; text?: string }[] };
+
+function showTypingIndicator(status: ChatStatus, messages: ChatMessage[]): boolean {
+  if (status === 'submitted') return true;
+  if (status !== 'streaming') return false;
+  // Streaming, but the latest assistant message hasn't produced anything
+  // visible yet — keep the indicator until a text or tool part lands.
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== 'assistant') return true;
+  const hasContent = last.parts.some(
+    (p) =>
+      (p.type === 'text' && typeof p.text === 'string' && p.text.length > 0) ||
+      p.type.startsWith('tool-'),
+  );
+  return !hasContent;
+}
+
+// Three small dots that wave from left → right via the typing-bounce
+// keyframe (defined in globals.css). The animation-delay stagger creates
+// the typing effect without any JS. `aria-live="polite"` so screen readers
+// announce "Generating response" once when it appears, not on every frame.
+function TypingIndicator() {
+  return (
+    <output
+      className="flex h-5 items-center gap-1.5"
+      aria-live="polite"
+      aria-label="Generating response"
+    >
+      <span className="sr-only">Generating response…</span>
+      <span
+        aria-hidden
+        className="size-1.5 rounded-full bg-muted-foreground animate-[typing-bounce_1.2s_ease-in-out_infinite]"
+      />
+      <span
+        aria-hidden
+        className="size-1.5 rounded-full bg-muted-foreground animate-[typing-bounce_1.2s_ease-in-out_infinite] [animation-delay:0.15s]"
+      />
+      <span
+        aria-hidden
+        className="size-1.5 rounded-full bg-muted-foreground animate-[typing-bounce_1.2s_ease-in-out_infinite] [animation-delay:0.3s]"
+      />
+    </output>
   );
 }
