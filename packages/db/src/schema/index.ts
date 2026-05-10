@@ -9,6 +9,7 @@ import {
   pgEnum,
   pgTable,
   primaryKey,
+  smallint,
   text,
   timestamp,
   uniqueIndex,
@@ -45,6 +46,14 @@ export const users = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     // Updated on every bootstrap call. Useful for M3 quotas and last-seen UI.
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+    // M2 PR 5 onboarding gate. `onboarded_at` non-null means the user
+    // finished the wizard — middleware/server-page-auth let them into
+    // /chat and /settings. Null means they're mid-onboarding (or
+    // pre-PR-5; the migration backfills NOW() so they skip the wizard).
+    // `onboarding_step` is 1..5 marking resume position; null when
+    // onboarded_at is set, OR when the user has not started yet.
+    onboardedAt: timestamp('onboarded_at', { withTimezone: true }),
+    onboardingStep: smallint('onboarding_step'),
   },
   (t) => [index('users_privy_did_idx').on(t.privyDid)],
 );

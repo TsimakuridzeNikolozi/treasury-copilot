@@ -40,6 +40,13 @@ export const config = {
   matcher: [
     '/chat/:path*',
     '/settings/:path*',
+    // M2 PR 5: /onboarding is auth-gated like /chat — soft cookie check
+    // here, strict verify in the page (`requireAuthOnly`). New API
+    // routes added in PR 5 (/api/me/onboarded, /api/me/onboarding-step,
+    // /api/treasury/balance) are already covered by the existing
+    // /api/me/:path* and /api/treasury/:path* patterns; no further
+    // matcher changes needed for them.
+    '/onboarding/:path*',
     '/api/chat/:path*',
     '/api/policy/:path*',
     '/api/me/:path*',
