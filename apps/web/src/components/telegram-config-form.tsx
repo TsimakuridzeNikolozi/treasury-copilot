@@ -275,11 +275,33 @@ function ApproverIdsField({
   error?: string;
 }) {
   const id = useId();
+  // Live count of valid-looking ids — gives the owner an at-a-glance
+  // sense of how many people can approve before they save. Uses the same
+  // dedupe + trim logic as parseApproverIds so the displayed count
+  // matches what would be persisted.
+  const approverCount = parseApproverIds(value).length;
+  const countLabel =
+    approverCount === 0
+      ? 'No approvers configured'
+      : `${approverCount} approver${approverCount === 1 ? '' : 's'} configured`;
   return (
     <div className="flex flex-col gap-1.5">
-      <label htmlFor={id} className="font-medium text-sm">
-        Approver Telegram user ids
-      </label>
+      <div className="flex items-center justify-between gap-2">
+        <label htmlFor={id} className="font-medium text-sm">
+          Approver Telegram user ids
+        </label>
+        <span
+          aria-live="polite"
+          className={cn(
+            'inline-flex items-center rounded-full border px-2 py-0.5 font-medium text-[11px]',
+            approverCount === 0
+              ? 'bg-muted text-muted-foreground'
+              : 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-400',
+          )}
+        >
+          {countLabel}
+        </span>
+      </div>
       <Textarea
         id={id}
         rows={4}

@@ -8,7 +8,7 @@ Treasury Copilot is a chat-first AI agent that manages a startup or DAO's USDC a
 
 Venue coverage today: deposit + withdraw are wired end-to-end on **Kamino** (Main Market, USDC reserve) and **Save** (Main Pool, USDC reserve). **Rebalance** is wired as a two-tx flow (withdraw fromVenue → deposit toVenue) over those two venues, with crash recovery between legs. Drift / Marginfi remain deferred to step 2E and are explicitly excluded from `DEFAULT_POLICY.allowedVenues` until their builders land.
 
-Read tools: the chat agent has a `getTreasurySnapshot` tool returning wallet USDC balance + per-venue position + supply APY for kamino and save. The chat route reads the default treasury from `TREASURY_PUBKEY_BASE58`.
+Read tools: the chat agent has a `getTreasurySnapshot` tool returning wallet USDC balance + per-venue position + supply APY for kamino and save. The chat route uses the active treasury's `wallet_address` (resolved from the `tc_active_treasury` cookie).
 
 Phase-1 markers: look for `// TODO(2E):` and similar pointers for work that's intentionally deferred.
 
@@ -51,8 +51,9 @@ After pulling PR 1, every existing checkout needs:
 ```bash
 pnpm db:migrate         # applies 0006 — adds users/treasuries/treasury_memberships + nullable treasury_id columns
 pnpm db:seed-m2         # inserts seed treasury, backfills, applies the M2 structural flips
-# copy the printed SEED_TREASURY_ID=<uuid> into BOTH apps/web/.env.local AND apps/worker/.env
 ```
+
+PR 4 (the current state) replaced the previous `SEED_TREASURY_ID` env back-reference with a runtime lookup on `signer_backend = 'local'` in the bootstrap path, so no copy-paste is required after seeding. The script still prints the seed wallet address — fund that.
 
 The seed script auto-loads `apps/web/.env.local` and `apps/worker/.env` (already-set shell vars take precedence), so no `set -a; source …` is needed. It is idempotent — safe to re-run. Why no Migration B SQL in the journal: drizzle-orm's migrator wraps all pending migrations in a single transaction, so a NOT NULL flip on `proposed_actions.treasury_id` would roll Migration A back atomically when M1 rows still exist. Inlining the flips into the seed script (after backfill) sidesteps that.
 
@@ -92,7 +93,9 @@ pnpm db:migrate         # applies 0007 — adds proposed_actions.telegram_chat_i
 
 Pre-PR-3 in-flight rows (`status=executing` at deploy time) execute correctly under the per-treasury factory but their original Telegram cards won't be edited because `proposed_actions.telegram_chat_id` is null on those rows. DB and on-chain outcomes are unaffected.
 
-PR 4 removes `TREASURY_PUBKEY_BASE58` and `SEED_TREASURY_ID` from web env (the latter is no longer used by any code path; it lingers as a setup nudge).
+### M2 PR 4 — web env cleanup
+
+PR 4 dropped `TREASURY_PUBKEY_BASE58` (already dead — chat reads `resolved.treasury.walletAddress`) and `SEED_TREASURY_ID` (replaced by runtime lookup on `signer_backend = 'local'`) from the web env. After pulling, you can delete both from `apps/web/.env.local` — the seed script still reads `TREASURY_PUBKEY_BASE58` from `process.env` directly to mint the seed row, so keep it set there until you've run `pnpm db:seed-m2` once.
 
 ## Architecture
 
@@ -218,7 +221,7 @@ Biome only. **Do not add ESLint or Prettier.** Run `pnpm exec biome check --writ
 
 These are first-feature work, not setup. When asked to "add X", check this list — if it's here, the answer is "yes, that's phase-1 work, not a config tweak":
 
-- Drop `TREASURY_PUBKEY_BASE58` and `SEED_TREASURY_ID` from web env — **PR 4**, after PR 3 settles. (Worker env trims for both already shipped in PR 3.)
+- Onboarding wizard (welcome + try-asking primer, fund-wallet step with manual CTA + balance polling, set-guardrails step, Telegram setup) gated by `users.onboarded_at` and middleware-redirected from `/chat` and `/settings` — **PR 5**. Existing users backfilled to `onboarded_at = NOW()` so they're not bounced back through it.
 - Multi-user-per-treasury, invitations, role expansion beyond `owner`, treasury rename / delete UX, Privy webhook for user-deleted lifecycle, automatic reconciler for stage-3 bootstrap failure, bootstrap rate limiting (Upstash/Redis-backed) — **M3**.
 - Protocol SDK coverage in `packages/protocols`: Kamino and Save are wired end-to-end (deposit + withdraw); Drift and Marginfi builders are still stubs
 - CI workflows (`.github/workflows/`)

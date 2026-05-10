@@ -67,7 +67,7 @@ export const treasuries = pgTable(
     // gives us the address but not the UUID; populated for new
     // provisioning where the admin API returns it.
     turnkeyWalletId: text('turnkey_wallet_id'),
-    signerBackend: text('signer_backend').notNull(),
+    signerBackend: text('signer_backend').notNull().$type<'local' | 'turnkey'>(),
     // Telegram routing — null chatId means "no Telegram routing configured;
     // auto-approve only". approverIds defaults to empty array; treasury can
     // exist without approvers (and require_approval actions will park in

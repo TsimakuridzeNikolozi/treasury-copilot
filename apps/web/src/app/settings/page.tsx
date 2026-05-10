@@ -37,7 +37,10 @@ export default async function SettingsPage() {
               Treasury: <span className="font-mono">{treasury.name}</span>
             </p>
           </div>
-          <WalletAddressBlock address={treasury.walletAddress} />
+          <WalletAddressBlock
+            address={treasury.walletAddress}
+            signerBackend={treasury.signerBackend}
+          />
         </header>
 
         <section className="flex flex-col gap-3">

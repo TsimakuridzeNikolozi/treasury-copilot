@@ -10,5 +10,5 @@ export const dynamic = 'force-dynamic';
 
 export default async function ChatPage() {
   const { treasury } = await bootstrapAuthAndTreasury('/chat');
-  return <ChatClient activeTreasuryId={treasury.id} />;
+  return <ChatClient activeTreasuryId={treasury.id} treasuryName={treasury.name} />;
 }

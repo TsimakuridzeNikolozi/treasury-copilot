@@ -130,3 +130,38 @@ export async function getTreasuryForRouting(
 ): Promise<TreasuryRow | null> {
   return getTreasuryById(db, treasuryId);
 }
+
+export class LocalModeTreasuryMissing extends Error {
+  constructor() {
+    super(
+      'No treasury with signer_backend=local found. Run `pnpm db:seed-m2` to create the local-mode seed treasury.',
+    );
+    this.name = 'LocalModeTreasuryMissing';
+  }
+}
+
+export class LocalModeTreasuryAmbiguous extends Error {
+  constructor(count: number) {
+    super(
+      `Found ${count} treasuries with signer_backend=local; expected exactly 1. Operator setup error — local mode assumes a single shared seed treasury.`,
+    );
+    this.name = 'LocalModeTreasuryAmbiguous';
+  }
+}
+
+// Local-mode bootstrap attaches every new dev user to a single shared
+// seed treasury. This helper finds it by signer_backend instead of by a
+// hardcoded UUID env var (the M1/PR-1 model). The seed script creates
+// exactly one row; >1 is a corruption signal worth surfacing loudly.
+//
+// No `.limit(2)` on purpose — when the ambiguity case fires, an exact
+// "Found N treasuries" error message is more operator-actionable than
+// "≥2". Local mode keeps this table tiny (1 row in normal operation) so
+// the unbounded scan is cheap.
+export async function getLocalModeTreasury(db: DbOrTx): Promise<TreasuryRow> {
+  const rows = await db.select().from(treasuries).where(eq(treasuries.signerBackend, 'local'));
+  if (rows.length === 0) throw new LocalModeTreasuryMissing();
+  if (rows.length > 1) throw new LocalModeTreasuryAmbiguous(rows.length);
+  // biome-ignore lint/style/noNonNullAssertion: length checked above
+  return rows[0]!;
+}
