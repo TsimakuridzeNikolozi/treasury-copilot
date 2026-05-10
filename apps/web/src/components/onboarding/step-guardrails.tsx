@@ -35,6 +35,9 @@ import { useId, useMemo, useState } from 'react';
 //   - allowedVenues = ['kamino', 'save'] (M2 venue coverage; matches
 //     DEFAULT_POLICY).
 
+const USDC_FORMAT = /^\d+(\.\d+)?$/;
+const SUBMIT_TIMEOUT_MS = 15_000;
+
 interface CompactState {
   requireApprovalAboveUsdc: string;
   maxAutoApprovedUsdcPer24h: string;
@@ -59,21 +62,35 @@ export function StepGuardrails({
   const [saving, setSaving] = useState<'idle' | 'defaults' | 'custom'>('idle');
   const [error, setError] = useState<string | null>(null);
 
-  // Cross-field check mirroring the API's invariant. parseFloat is safe
-  // for cap magnitudes; the route's regex rejects scientific.
+  // Both fields must match the API's accepted format before the
+  // cross-field comparison runs — empty strings and exponent notation
+  // (e.g. "1e5") are accepted by Number.parseFloat but rejected by the
+  // API's regex, so we pre-screen them here to keep Continue disabled
+  // until inputs are well-formed.
+  const formatValid = useMemo(
+    () =>
+      USDC_FORMAT.test(state.requireApprovalAboveUsdc) &&
+      USDC_FORMAT.test(state.maxAutoApprovedUsdcPer24h),
+    [state.requireApprovalAboveUsdc, state.maxAutoApprovedUsdcPer24h],
+  );
+
   const requireGtCap = useMemo(() => {
+    if (!formatValid) return false;
     const a = Number.parseFloat(state.requireApprovalAboveUsdc);
     const b = Number.parseFloat(state.maxAutoApprovedUsdcPer24h);
-    return Number.isFinite(a) && Number.isFinite(b) && a > b;
-  }, [state.requireApprovalAboveUsdc, state.maxAutoApprovedUsdcPer24h]);
+    return a > b;
+  }, [state.requireApprovalAboveUsdc, state.maxAutoApprovedUsdcPer24h, formatValid]);
 
   const submit = async (values: CompactState, mode: 'defaults' | 'custom') => {
     setSaving(mode);
     setError(null);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), SUBMIT_TIMEOUT_MS);
     try {
       const token = await getAccessToken();
       const res = await fetch('/api/policy', {
         method: 'PATCH',
+        signal: controller.signal,
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -86,6 +103,7 @@ export function StepGuardrails({
           treasuryId: treasury.id,
         }),
       });
+      clearTimeout(timeoutId);
       if (res.status === 409) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
         if (body.error === 'no_active_treasury') {
@@ -101,7 +119,12 @@ export function StepGuardrails({
       }
       onAdvance();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      clearTimeout(timeoutId);
+      if (e instanceof DOMException && e.name === 'AbortError') {
+        setError('Request timed out. Please try again.');
+      } else {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     } finally {
       setSaving('idle');
     }
@@ -163,7 +186,7 @@ export function StepGuardrails({
             {saving === 'defaults' && <Loader2Icon className="size-4 animate-spin" aria-hidden />}
             Use defaults
           </Button>
-          <Button type="submit" disabled={saving !== 'idle' || requireGtCap} className="gap-1.5">
+          <Button type="submit" disabled={saving !== 'idle' || !formatValid || requireGtCap} className="gap-1.5">
             {saving === 'custom' && <Loader2Icon className="size-4 animate-spin" aria-hidden />}
             Continue
           </Button>

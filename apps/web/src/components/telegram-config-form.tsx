@@ -51,11 +51,11 @@ function parseApproverIds(raw: string): string[] {
 export function TelegramConfigForm({
   initial,
   treasuryId,
-  // M2 PR 5: when both callbacks are passed, the form is in "embedded
-  // wizard" mode. The sticky save bar is replaced with two CTAs (Skip
-  // and Save & continue) and a successful save calls `onSaved` so the
-  // wizard can advance. `onSkip` advances without saving — used by the
-  // wizard's step 4 "Skip — auto-approve only" path.
+  // M2 PR 5: when one or both callbacks (onSaved, onSkip) are passed,
+  // the form is in "embedded wizard" mode. The sticky save bar is
+  // replaced with Skip / Save & continue CTAs. `onSaved` fires after a
+  // successful save so the wizard can advance; `onSkip` advances without
+  // saving — either may be omitted independently.
   onSaved,
   onSkip,
 }: {

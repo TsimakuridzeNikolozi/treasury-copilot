@@ -11,7 +11,7 @@ import {
   markUserOnboardingStep,
 } from './users';
 
-const DATABASE_URL = process.env.DATABASE_URL ?? TEST_DATABASE_URL;
+const DATABASE_URL = TEST_DATABASE_URL;
 const SKIP = process.env.SKIP_DB_TESTS === '1';
 
 const queryClient = postgres(DATABASE_URL, { max: 4 });

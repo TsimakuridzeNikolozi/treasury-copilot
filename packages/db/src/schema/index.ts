@@ -55,7 +55,13 @@ export const users = pgTable(
     onboardedAt: timestamp('onboarded_at', { withTimezone: true }),
     onboardingStep: smallint('onboarding_step'),
   },
-  (t) => [index('users_privy_did_idx').on(t.privyDid)],
+  (t) => [
+    index('users_privy_did_idx').on(t.privyDid),
+    check(
+      'users_onboarding_step_range_chk',
+      sql`${t.onboardingStep} IS NULL OR (${t.onboardingStep} >= 1 AND ${t.onboardingStep} <= 5)`,
+    ),
+  ],
 );
 
 // One row per treasury. M2 ships personal treasuries only — every user gets

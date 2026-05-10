@@ -30,3 +30,6 @@ ALTER TABLE "users" ADD COLUMN "onboarding_step" smallint;
 UPDATE "users" SET "onboarded_at" = NOW()
 WHERE "onboarded_at" IS NULL
   AND "id" IN (SELECT DISTINCT "user_id" FROM "treasury_memberships");
+--> statement-breakpoint
+ALTER TABLE "users" ADD CONSTRAINT "users_onboarding_step_range_chk"
+  CHECK ("onboarding_step" IS NULL OR ("onboarding_step" >= 1 AND "onboarding_step" <= 5));
