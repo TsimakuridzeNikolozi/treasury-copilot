@@ -23,6 +23,12 @@ interface YieldDriftConfig {
   cooldownHours: number;
 }
 
+interface IdleCapitalConfig {
+  minIdleUsdc: number;
+  minDwellHours: number;
+  cooldownHours: number;
+}
+
 // Mirrors the `SubscriptionDto` shape returned by GET /api/alerts in
 // apps/web/src/app/api/alerts/route.ts. Defined separately because this
 // is a client component and the route's type imports @tc/db — the two
@@ -37,10 +43,11 @@ export interface AlertSubscriptionDto {
 }
 
 // Each entry's `wired` flag controls whether the threshold editor is
-// shown. M3-2 wires yield_drift only; the other four ride the toggle
-// surface and will get their editors when their respective worker jobs
-// land. Keeping them visible (with "coming soon" copy) lets users see
-// the full surface area + opt in early for kinds they want when ready.
+// shown. M3-2 wires yield_drift, M3-3 wires idle_capital; the other
+// three ride the toggle surface and will get their editors when their
+// respective worker jobs land. Keeping them visible (with "coming soon"
+// copy) lets users see the full surface area + opt in early for kinds
+// they want when ready.
 const KINDS: ReadonlyArray<{
   kind: AlertKind;
   label: string;
@@ -56,8 +63,8 @@ const KINDS: ReadonlyArray<{
   {
     kind: 'idle_capital',
     label: 'Idle capital',
-    hint: 'Nudges you when wallet USDC has sat undeployed past a dwell threshold. Available in M3-3.',
-    wired: false,
+    hint: "Nudges you when wallet USDC has sat undeployed past the dwell threshold, with the best venue's APY and projected monthly upside.",
+    wired: true,
   },
   {
     kind: 'anomaly',
@@ -89,11 +96,25 @@ const YIELD_DRIFT_DEFAULTS: YieldDriftConfig = {
   cooldownHours: 24,
 };
 
+// Mirrors @tc/db's IDLE_CAPITAL_DEFAULT_CONFIG. Same client-component
+// inlining rationale.
+const IDLE_CAPITAL_DEFAULTS: IdleCapitalConfig = {
+  minIdleUsdc: 5000,
+  minDwellHours: 72,
+  cooldownHours: 48,
+};
+
 // Indexed shape so dirty detection is a single object comparison. Keys are
 // the AlertKind values; each value carries the enabled flag and the
 // per-kind config (only yield_drift has meaningful editable config in this
 // PR — the rest carry `{}`).
 type FormState = Record<AlertKind, { enabled: boolean; config: Record<string, unknown> }>;
+
+function defaultConfigFor(kind: AlertKind): Record<string, unknown> {
+  if (kind === 'yield_drift') return { ...YIELD_DRIFT_DEFAULTS };
+  if (kind === 'idle_capital') return { ...IDLE_CAPITAL_DEFAULTS };
+  return {};
+}
 
 function fromInitial(rows: AlertSubscriptionDto[]): FormState {
   const out = {} as FormState;
@@ -101,10 +122,26 @@ function fromInitial(rows: AlertSubscriptionDto[]): FormState {
     const row = rows.find((r) => r.kind === kind);
     out[kind] = {
       enabled: row?.enabled ?? false,
-      config: row?.config ?? (kind === 'yield_drift' ? { ...YIELD_DRIFT_DEFAULTS } : {}),
+      config: row?.config ?? defaultConfigFor(kind),
     };
   }
   return out;
+}
+
+function readIdleCapital(state: FormState): IdleCapitalConfig {
+  const cfg = state.idle_capital.config as Partial<IdleCapitalConfig>;
+  return {
+    minIdleUsdc:
+      typeof cfg.minIdleUsdc === 'number' ? cfg.minIdleUsdc : IDLE_CAPITAL_DEFAULTS.minIdleUsdc,
+    minDwellHours:
+      typeof cfg.minDwellHours === 'number'
+        ? cfg.minDwellHours
+        : IDLE_CAPITAL_DEFAULTS.minDwellHours,
+    cooldownHours:
+      typeof cfg.cooldownHours === 'number'
+        ? cfg.cooldownHours
+        : IDLE_CAPITAL_DEFAULTS.cooldownHours,
+  };
 }
 
 function readYieldDrift(state: FormState): YieldDriftConfig {
@@ -123,6 +160,20 @@ function readYieldDrift(state: FormState): YieldDriftConfig {
         ? cfg.cooldownHours
         : YIELD_DRIFT_DEFAULTS.cooldownHours,
   };
+}
+
+// Mirror of api/alerts/route.ts's idle-capital validation.
+function validateIdleCapital(cfg: IdleCapitalConfig): string | null {
+  if (cfg.minIdleUsdc < 1 || cfg.minIdleUsdc > 1_000_000_000) {
+    return 'Min idle USDC must be between $1 and $1B.';
+  }
+  if (!Number.isInteger(cfg.minDwellHours) || cfg.minDwellHours < 1 || cfg.minDwellHours > 720) {
+    return 'Min dwell hours must be a whole number between 1 and 720.';
+  }
+  if (!Number.isInteger(cfg.cooldownHours) || cfg.cooldownHours < 1 || cfg.cooldownHours > 720) {
+    return 'Cooldown hours must be a whole number between 1 and 720.';
+  }
+  return null;
 }
 
 // Mirror of api/alerts/route.ts's yield-drift validation. Keeps the user's
@@ -186,7 +237,12 @@ export function AlertSubscriptionsForm({
     return validateYieldDrift(readYieldDrift(state));
   }, [state]);
 
-  const blocking = yieldDriftError !== null;
+  const idleCapitalError = useMemo(() => {
+    if (!state.idle_capital.enabled) return null;
+    return validateIdleCapital(readIdleCapital(state));
+  }, [state]);
+
+  const blocking = yieldDriftError !== null || idleCapitalError !== null;
 
   useEffect(() => {
     if (savedAt == null) return;
@@ -200,20 +256,29 @@ export function AlertSubscriptionsForm({
     try {
       const token = await getAccessToken();
       for (const kind of dirtyKinds) {
-        const body =
-          kind === 'yield_drift'
-            ? {
-                treasuryId,
-                kind,
-                enabled: state.yield_drift.enabled,
-                config: readYieldDrift(state),
-              }
-            : {
-                treasuryId,
-                kind,
-                enabled: state[kind].enabled,
-                config: state[kind].config,
-              };
+        let body: Record<string, unknown>;
+        if (kind === 'yield_drift') {
+          body = {
+            treasuryId,
+            kind,
+            enabled: state.yield_drift.enabled,
+            config: readYieldDrift(state),
+          };
+        } else if (kind === 'idle_capital') {
+          body = {
+            treasuryId,
+            kind,
+            enabled: state.idle_capital.enabled,
+            config: readIdleCapital(state),
+          };
+        } else {
+          body = {
+            treasuryId,
+            kind,
+            enabled: state[kind].enabled,
+            config: state[kind].config,
+          };
+        }
         const res = await fetch('/api/alerts', {
           method: 'PATCH',
           headers: {
@@ -246,6 +311,7 @@ export function AlertSubscriptionsForm({
   };
 
   const yd = readYieldDrift(state);
+  const ic = readIdleCapital(state);
 
   return (
     <form
@@ -285,6 +351,21 @@ export function AlertSubscriptionsForm({
                     }))
                   }
                   error={yieldDriftError}
+                />
+              )}
+              {entry.kind === 'idle_capital' && row.enabled && (
+                <IdleCapitalEditor
+                  value={ic}
+                  onChange={(next) =>
+                    setState((cur) => ({
+                      ...cur,
+                      idle_capital: {
+                        ...cur.idle_capital,
+                        config: next as unknown as Record<string, unknown>,
+                      },
+                    }))
+                  }
+                  error={idleCapitalError}
                 />
               )}
             </Card>
@@ -449,6 +530,54 @@ function YieldDriftEditor({
           step={1}
           min={1}
           max={168}
+        />
+      </div>
+      {error && <p className="text-destructive text-xs">{error}</p>}
+    </div>
+  );
+}
+
+function IdleCapitalEditor({
+  value,
+  onChange,
+  error,
+}: {
+  value: IdleCapitalConfig;
+  onChange: (next: IdleCapitalConfig) => void;
+  error: string | null;
+}) {
+  return (
+    <div className="flex flex-col gap-4 px-5 py-5">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <NumField
+          label="Min idle USDC"
+          prefix="$"
+          value={value.minIdleUsdc}
+          onChange={(v) => onChange({ ...value, minIdleUsdc: v })}
+          help="Skip wallets sitting below this much USDC."
+          step={1}
+          min={1}
+          max={1_000_000_000}
+        />
+        <NumField
+          label="Min dwell"
+          suffix="hours"
+          value={value.minDwellHours}
+          onChange={(v) => onChange({ ...value, minDwellHours: v })}
+          help="Wait this long since the last deposit / transfer / rebalance."
+          step={1}
+          min={1}
+          max={720}
+        />
+        <NumField
+          label="Cooldown"
+          suffix="hours"
+          value={value.cooldownHours}
+          onChange={(v) => onChange({ ...value, cooldownHours: v })}
+          help="Don't re-fire for this wallet within the window."
+          step={1}
+          min={1}
+          max={720}
         />
       </div>
       {error && <p className="text-destructive text-xs">{error}</p>}

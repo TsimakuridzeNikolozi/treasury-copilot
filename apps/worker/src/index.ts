@@ -1,6 +1,7 @@
 import { bot } from './bot';
 import { env } from './env';
 import { startExecutor } from './executor';
+import { checkIdleCapital } from './jobs/check-idle-capital';
 import { checkYieldDrift } from './jobs/check-yield-drift';
 import { collectApySnapshots } from './jobs/collect-apy-snapshots';
 import { startActionPoller } from './poller';
@@ -30,6 +31,17 @@ const stopScheduledJobs = startScheduledJobs([
     // positions for nothing.
     runImmediately: false,
     run: checkYieldDrift,
+  },
+  {
+    name: 'check-idle-capital',
+    intervalMs: env.IDLE_CAPITAL_CHECK_INTERVAL_MS,
+    jitterMs: env.IDLE_CAPITAL_CHECK_JITTER_MS,
+    // No immediate run: same rationale as yield-drift — the latest-APY
+    // read needs the collector to have populated at least one tick per
+    // wired venue. The daily cadence means the first natural run lands
+    // ~24h after boot, well after the hourly collector has filled in.
+    runImmediately: false,
+    run: checkIdleCapital,
   },
 ]);
 

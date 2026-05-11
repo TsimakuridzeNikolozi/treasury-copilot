@@ -3,6 +3,7 @@ import { db } from '@/lib/db';
 import { verifyBearer } from '@/lib/privy';
 import {
   type AlertKind,
+  IDLE_CAPITAL_DEFAULT_CONFIG,
   YIELD_DRIFT_DEFAULT_CONFIG,
   ensureSubscriptionsForTreasury,
   listSubscriptions,
@@ -31,8 +32,19 @@ const yieldDriftConfigSchema = z.object({
   cooldownHours: z.number().int().min(1).max(168),
 });
 
-// Discriminated union by kind so adding M3-3/M3-5/M5-1/M5-2 schemas is
-// a single new variant + a new union member (no other code changes).
+const idleCapitalConfigSchema = z.object({
+  // $1..$1B. Lower bound of 1 prevents the alert from firing on dust;
+  // upper bound is the same sanity ceiling as yield-drift.
+  minIdleUsdc: z.number().min(1).max(1_000_000_000),
+  // 1h..720h (=30 days). Below 1h is sub-noise; a month-plus dwell is
+  // already past every meaningful "this is idle" line.
+  minDwellHours: z.number().int().min(1).max(720),
+  // 1h..720h. Plan default = 48h.
+  cooldownHours: z.number().int().min(1).max(720),
+});
+
+// Discriminated union by kind so adding M3-5/M5-1/M5-2 schemas is a
+// single new variant + a new union member (no other code changes).
 const AlertPatch = z.discriminatedUnion('kind', [
   z.object({
     treasuryId: z.string().uuid(),
@@ -40,14 +52,20 @@ const AlertPatch = z.discriminatedUnion('kind', [
     enabled: z.boolean(),
     config: yieldDriftConfigSchema,
   }),
-  // Other kinds are toggle-only in this PR — their config schemas land
-  // with their respective worker jobs (M3-3 idle, M3-5 anomaly, M5-1
-  // concentration, M5-2 protocol_health). Until then a user can still
-  // enable/disable them with an empty config; the worker ignores them
-  // until the corresponding job ships.
   z.object({
     treasuryId: z.string().uuid(),
-    kind: z.enum(['idle_capital', 'anomaly', 'concentration', 'protocol_health']),
+    kind: z.literal('idle_capital'),
+    enabled: z.boolean(),
+    config: idleCapitalConfigSchema,
+  }),
+  // Other kinds are toggle-only — their config schemas land with their
+  // respective worker jobs (M3-5 anomaly, M5-1 concentration, M5-2
+  // protocol_health). Until then a user can still enable/disable them
+  // with an empty config; the worker ignores them until the
+  // corresponding job ships.
+  z.object({
+    treasuryId: z.string().uuid(),
+    kind: z.enum(['anomaly', 'concentration', 'protocol_health']),
     enabled: z.boolean(),
     config: z.record(z.string(), z.unknown()).default({}),
   }),
@@ -83,6 +101,7 @@ interface SubscriptionDto {
 // with a delete.
 function defaultsFor(kind: AlertKind): Record<string, unknown> {
   if (kind === 'yield_drift') return { ...YIELD_DRIFT_DEFAULT_CONFIG };
+  if (kind === 'idle_capital') return { ...IDLE_CAPITAL_DEFAULT_CONFIG };
   return {};
 }
 
