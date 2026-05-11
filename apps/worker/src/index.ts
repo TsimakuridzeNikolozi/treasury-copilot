@@ -1,6 +1,7 @@
 import { bot } from './bot';
 import { env } from './env';
 import { startExecutor } from './executor';
+import { checkYieldDrift } from './jobs/check-yield-drift';
 import { collectApySnapshots } from './jobs/collect-apy-snapshots';
 import { startActionPoller } from './poller';
 import { startScheduledJobs } from './scheduled-jobs';
@@ -16,6 +17,19 @@ const stopScheduledJobs = startScheduledJobs([
     jitterMs: env.APY_SNAPSHOT_JITTER_MS,
     runImmediately: true,
     run: collectApySnapshots,
+  },
+  {
+    name: 'check-yield-drift',
+    intervalMs: env.YIELD_DRIFT_CHECK_INTERVAL_MS,
+    jitterMs: env.YIELD_DRIFT_CHECK_JITTER_MS,
+    // No immediate run: the APY collector needs at least a sustainHours
+    // window of snapshots before drift can be meaningfully evaluated. The
+    // first scheduled tick (6h later) lands well after the collector has
+    // populated history. Running immediately would just no-op (avg returns
+    // null until the window fills) but would spend RPC budget reading
+    // positions for nothing.
+    runImmediately: false,
+    run: checkYieldDrift,
   },
 ]);
 

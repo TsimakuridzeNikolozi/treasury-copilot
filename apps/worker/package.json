@@ -13,6 +13,7 @@
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
     "smoke:notify": "tsx --env-file=.env src/scripts/test-notification.ts",
+    "smoke:yield-drift": "tsx --env-file=.env src/scripts/check-yield-drift.ts",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
@@ -23,6 +24,7 @@
     "@tc/protocols": "workspace:*",
     "@tc/signer": "workspace:*",
     "@tc/types": "workspace:*",
+    "decimal.js": "^10.4.3",
     "grammy": "^1.42.0",
     "zod": "^3.23.8"
   },

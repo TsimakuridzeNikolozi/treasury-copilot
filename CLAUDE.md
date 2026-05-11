@@ -148,6 +148,41 @@ APY_SNAPSHOT_JITTER_MS=300000      # ±5min
 - `apps/worker/src/jobs/` — per-job entry points. PR 1 ships `collect-apy-snapshots.ts`.
 - `apps/worker/src/bot.ts` exposes `sendPlainMessage(chatId, htmlBody)` — non-approval Telegram message helper. Reused by the dispatcher and (in later M3 PRs) for digest / alert bodies.
 
+### M3 PR 2 — yield-drift alerts
+
+PR 2 ships the first user-visible M3 feature: per-treasury yield-drift alerts driven by a periodic check job. After pulling:
+
+```bash
+pnpm install                # adds decimal.js to apps/worker
+pnpm db:migrate             # applies 0010 — adds alert_subscriptions + seeds
+                            # one row per existing treasury × each kind, all
+                            # disabled, with the yield_drift default config.
+```
+
+Two optional new worker env vars; defaults match the plan:
+
+```bash
+# apps/worker/.env — both optional, defaults shown
+YIELD_DRIFT_CHECK_INTERVAL_MS=21600000  # 6h
+YIELD_DRIFT_CHECK_JITTER_MS=1800000     # ±30min
+```
+
+**New table (migration 0010).**
+- `alert_subscriptions` — one row per `(treasury_id, kind)`. `kind` is CHECK-constrained to `yield_drift | idle_capital | anomaly | concentration | protocol_health`; later PRs widen the check as they wire each kind. `enabled` defaults to false (nothing surprises users). `config` is free-form jsonb so each kind owns its own schema. The 0010 migration backfills 5 rows per existing treasury — adding a new kind later only widens the CHECK + does an `UPDATE` on existing rows' `config`. New treasuries are lazily seeded by `ensureSubscriptionsForTreasury`, called on each `/settings` render.
+
+**New worker job.**
+- `apps/worker/src/jobs/check-yield-drift.ts` — every 6h (±30min jitter). For each treasury subscribed to `yield_drift`, reads live positions for the venues in `policy.allowedVenues`, then compares the held-venue 24h-avg APY against every other allowed venue's 24h-avg using `getAvgApy` (`apy_snapshots` is the source of truth — no live SDK fan-out for APY). Two gates fire: **sustained** (`avg(alt) − avg(held)` ≥ `minDriftBps`) AND **currently active** (`latest(alt)` still ≥ `latest(held)` — prevents alerts on reversed drifts). If both pass AND projected monthly opportunity ≥ `minOpportunityUsdcPerMonth`, dispatches a notification with dedupeKey `yield_drift:<heldVenue>:<altVenue>` and a `cooldownHours`-wide window. `runImmediately: false` so the first tick lands after the APY collector has populated history.
+
+**New web routes + UI.**
+- `/api/alerts` (GET, PATCH). PATCH body is a Zod-discriminated union on `kind`: yield_drift carries a full thresholds schema; the other kinds accept `{}` config + toggle only until their PRs land. Body-vs-cookie 409 guard, owner-only RBAC, atomic audit_logs row (`kind = 'alert_subscription_updated'`) — same shape as `policy_updated`.
+- `/settings → Alerts` section. `AlertSubscriptionsForm` renders all 5 kinds; yield_drift gets an inline threshold editor when enabled; the other 4 carry a "Coming soon" badge and toggle-only surface. Dual-state baseline/dirty pattern mirrors `PolicyForm` and `TelegramConfigForm`. Saving fires one PATCH per dirty kind so a partial failure leaves the rest intact.
+
+**New AI tool.**
+- `getAlertConfig()` — read-only listing of the user's subscriptions for chat queries ("are my alerts on?", "what's my drift threshold?"). No write tool by design; the AI cannot toggle alerts. Users edit through `/settings → Alerts`.
+
+**Smoke testing.**
+- `pnpm --filter @tc/worker smoke:yield-drift` runs one check pass against the current DB + RPC. Seed `apy_snapshots` with a drift scenario (see the script's header comment for SQL), enable `yield_drift` in `/settings → Alerts`, ensure your treasury has a non-zero position in the held venue, then run. Expect one Telegram message + one `notifications` row of `kind='yield_drift'`. Re-run within the cooldown window → dedupe skip (same kind, status='skipped').
+
 ## Architecture
 
 ### The trust boundary (security-critical)
