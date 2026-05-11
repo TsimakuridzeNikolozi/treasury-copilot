@@ -11,6 +11,7 @@
     "./save": "./src/save.ts",
     "./drift": "./src/drift.ts",
     "./marginfi": "./src/marginfi.ts",
+    "./jupiter": "./src/jupiter.ts",
     "./usdc": "./src/usdc.ts"
   },
   "scripts": {
@@ -21,6 +22,7 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
+    "@jup-ag/lend": "0.1.9",
     "@kamino-finance/klend-sdk": "^5.15.4",
     "@solana/web3.js": "^1.95.0",
     "@solendprotocol/solend-sdk": "^0.14.27",

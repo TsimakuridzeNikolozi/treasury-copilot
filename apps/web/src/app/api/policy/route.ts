@@ -13,10 +13,11 @@ export const dynamic = 'force-dynamic';
 // scientific notation. Mirrors the regex used in @tc/types for action amounts.
 const decimalUsdc = z.string().regex(/^\d+(\.\d+)?$/, 'must be a positive decimal USDC string');
 
-// M1 only allows kamino + save; drift/marginfi gate-keep at the policy
-// engine until 2E builders land. Letting them through here would let
-// operators set themselves up for runtime crashes.
-const venue = z.enum(['kamino', 'save']);
+// Only the venues with real deposit/withdraw builders are accepted here;
+// drift/marginfi gate-keep at the policy engine until their builders land.
+// Letting them through would let operators set themselves up for runtime
+// crashes.
+const venue = z.enum(['kamino', 'save', 'jupiter']);
 
 // Decimal-USDC strings have arbitrary precision (numeric(20, 6) on the
 // column). Number() parses fine for the magnitudes we accept (cap is well

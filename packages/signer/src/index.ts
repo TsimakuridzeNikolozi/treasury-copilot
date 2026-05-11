@@ -7,6 +7,11 @@ import {
   type TransactionInstruction,
 } from '@solana/web3.js';
 import {
+  JUPITER_LEND_PROGRAM_ID_BASE58,
+  buildJupiterDepositInstructions,
+  buildJupiterWithdrawInstructions,
+} from '@tc/protocols/jupiter';
+import {
   KLEND_PROGRAM_ID_BASE58,
   buildKaminoDepositInstructions,
   buildKaminoWithdrawInstructions,
@@ -160,6 +165,32 @@ const SAVE_WITHDRAW_ALLOWED_PROGRAMS = new Set<string>([
   SWITCHBOARD_ONDEMAND_PROGRAM,
 ]);
 
+// Jupiter Lend (Earn) deposit. The SDK's getDepositIxs returns at most two
+// outer ixs — an optional jlUSDC ATA-create and the deposit ix itself.
+// CPIs to the SPL Token program (token transfer) and to Fluid's liquidity
+// program happen inside the deposit ix, not at the outer tx level, so
+// they don't need to appear in the allowlist. System + Compute Budget +
+// SPL Token are kept here as defense-in-depth in case a future SDK minor
+// version adds priority fee or pre-flight ixs — failing closed on a new
+// program ID is the wrong default for an integration we own.
+const JUPITER_DEPOSIT_ALLOWED_PROGRAMS = new Set<string>([
+  JUPITER_LEND_PROGRAM_ID_BASE58,
+  SYSTEM_PROGRAM,
+  COMPUTE_BUDGET_PROGRAM,
+  ATA_PROGRAM,
+  SPL_TOKEN_PROGRAM,
+]);
+
+// Same set for withdraw: the SDK pattern is symmetric (optional underlying-
+// asset ATA-create + the withdraw ix).
+const JUPITER_WITHDRAW_ALLOWED_PROGRAMS = new Set<string>([
+  JUPITER_LEND_PROGRAM_ID_BASE58,
+  SYSTEM_PROGRAM,
+  COMPUTE_BUDGET_PROGRAM,
+  ATA_PROGRAM,
+  SPL_TOKEN_PROGRAM,
+]);
+
 const SMOKE_TRANSFER_ALLOWED_PROGRAMS = new Set<string>([SYSTEM_PROGRAM]);
 
 function buildTreasurySigner(config: SignerConfig): TreasurySigner {
@@ -260,8 +291,18 @@ export function createSigner(config: SignerConfig): Signer {
         instructions = built.instructions;
         extraSigners = built.extraSigners;
         allowedPrograms = SAVE_WITHDRAW_ALLOWED_PROGRAMS;
+      } else if (action.kind === 'deposit' && action.venue === 'jupiter') {
+        const built = await buildJupiterDepositInstructions(action, ctx);
+        instructions = built.instructions;
+        extraSigners = built.extraSigners;
+        allowedPrograms = JUPITER_DEPOSIT_ALLOWED_PROGRAMS;
+      } else if (action.kind === 'withdraw' && action.venue === 'jupiter') {
+        const built = await buildJupiterWithdrawInstructions(action, ctx);
+        instructions = built.instructions;
+        extraSigners = built.extraSigners;
+        allowedPrograms = JUPITER_WITHDRAW_ALLOWED_PROGRAMS;
       } else {
-        // TODO(2E): Drift, Marginfi.
+        // Drift, Marginfi: deferred — still no builders.
         // Rebalance never reaches here — the executor decomposes it into
         // withdraw + deposit allow decisions via policy.deriveRebalanceLegs
         // and calls executeApproved twice. This branch only catches future
