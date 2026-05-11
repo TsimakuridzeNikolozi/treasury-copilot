@@ -45,6 +45,12 @@ const baseEnv = z.object({
   YIELD_DRIFT_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(21_600_000),
   YIELD_DRIFT_CHECK_JITTER_MS: z.coerce.number().int().nonnegative().default(1_800_000),
 
+  // M3 PR 3 — idle-capital nudge cadence. Daily (24h) + 1h jitter per
+  // plan. The dwell window (default 72h) is much wider than the check
+  // cadence so the signal is stable across ticks.
+  IDLE_CAPITAL_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(86_400_000),
+  IDLE_CAPITAL_CHECK_JITTER_MS: z.coerce.number().int().nonnegative().default(3_600_000),
+
   SIGNER_COMMITMENT: z.enum(['processed', 'confirmed', 'finalized']).default('confirmed'),
   SIGNER_CONFIRM_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
   // Per-call signing timeout. Bounds the Turnkey API call separately from

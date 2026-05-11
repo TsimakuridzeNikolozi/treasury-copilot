@@ -14,6 +14,7 @@
     "test:watch": "vitest",
     "smoke:notify": "tsx --env-file=.env src/scripts/test-notification.ts",
     "smoke:yield-drift": "tsx --env-file=.env src/scripts/check-yield-drift.ts",
+    "smoke:idle-capital": "tsx --env-file=.env src/scripts/check-idle-capital.ts",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {

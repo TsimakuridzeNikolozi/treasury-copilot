@@ -183,6 +183,51 @@ YIELD_DRIFT_CHECK_JITTER_MS=1800000     # ±30min
 **Smoke testing.**
 - `pnpm --filter @tc/worker smoke:yield-drift` runs one check pass against the current DB + RPC. Seed `apy_snapshots` with a drift scenario (see the script's header comment for SQL), enable `yield_drift` in `/settings → Alerts`, ensure your treasury has a non-zero position in the held venue, then run. Expect one Telegram message + one `notifications` row of `kind='yield_drift'`. Re-run within the cooldown window → dedupe skip (same kind, status='skipped').
 
+### M3 PR 3 — idle-capital nudges
+
+PR 3 ships the second user-visible M3 alert: notifies the user when a meaningful USDC balance has sat in the treasury wallet (undeployed) past the dwell threshold. After pulling:
+
+```bash
+pnpm db:migrate             # applies 0011 — backfills idle_capital row's
+                            # empty config with the M3-3 defaults. Idempotent.
+```
+
+Two optional new worker env vars; defaults match the plan:
+
+```bash
+# apps/worker/.env — both optional, defaults shown
+IDLE_CAPITAL_CHECK_INTERVAL_MS=86400000  # 24h
+IDLE_CAPITAL_CHECK_JITTER_MS=3600000     # ±1h
+```
+
+**New DB query.**
+- `getLastWalletOutflowAt(db, treasuryId)` (in `packages/db/src/queries/actions.ts`) — most recent `executed` action where `payload->>'kind' IN ('deposit', 'transfer', 'rebalance')`. Used by the dwell check. Reads the JSON path because `kind` lives in `payload`, not a column. `transfer` is in the IN-list pre-emptively so M4-1 doesn't need to touch this query.
+
+**New worker job.**
+- `apps/worker/src/jobs/check-idle-capital.ts` — daily (24h ±1h jitter). Per enabled treasury:
+  1. Read wallet USDC via `getWalletUsdcBalance` (same call `proposeAction` uses).
+  2. If balance < `minIdleUsdc` → bail.
+  3. Compute dwell = `now − MAX(treasury.created_at, lastOutflowAt)`. If < `minDwellHours` → bail. The `treasury.created_at` floor handles brand-new treasuries that have no actions yet (otherwise they'd fire immediately on first funding, which is the opposite of "idle").
+  4. Pick the highest-APY venue across `policy.allowedVenues` from `apy_snapshots` (no live SDK fan-out).
+  5. Compute monthly opportunity cost = `idle × apy × 30/365`.
+  6. Dispatch with dedupeKey `idle_capital:<walletAddress>` and `cooldownHours`-wide window. `runImmediately: false`.
+
+**Telegram body example.**
+```text
+Idle USDC
+~$45,000 has sat in your wallet for 4 days.
+At Kamino's current 5.40% APY that's ~$202/mo of yield foregone.
+
+Reply in chat: deposit 45000 to kamino
+```
+
+**Web surface.**
+- `/settings → Alerts` — `idle_capital` row now shows an inline editor (3 fields: min idle USDC, min dwell hours, cooldown hours) when toggled on. "Coming soon" badge removed.
+- `/api/alerts` PATCH — `idle_capital` joins the discriminated union with its own Zod schema (`idleCapitalConfigSchema`). The catch-all for unwired kinds shrinks to 3 (anomaly, concentration, protocol_health).
+
+**Smoke testing.**
+- `pnpm --filter @tc/worker smoke:idle-capital` runs one pass. The script's header comment documents the SQL you'd run to backdate `executed_at` on the most recent outflow for fast iteration. For dev, lower `minIdleUsdc` to a value below your actual wallet balance (real dev wallets rarely hold $5k).
+
 ## Architecture
 
 ### The trust boundary (security-critical)

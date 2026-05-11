@@ -10,6 +10,7 @@ import { db } from '@/lib/db';
 import { bootstrapAuthAndTreasury } from '@/lib/server-page-auth';
 import {
   type AlertKind,
+  IDLE_CAPITAL_DEFAULT_CONFIG,
   YIELD_DRIFT_DEFAULT_CONFIG,
   ensureSubscriptionsForTreasury,
   getPolicy,
@@ -41,10 +42,15 @@ export default async function SettingsPage() {
     const kind = r.kind as AlertKind;
     const cfg = (r.config ?? {}) as Record<string, unknown>;
     const hasCfg = Object.keys(cfg).length > 0;
+    let fallback: Record<string, unknown> = {};
+    if (!hasCfg) {
+      if (kind === 'yield_drift') fallback = { ...YIELD_DRIFT_DEFAULT_CONFIG };
+      else if (kind === 'idle_capital') fallback = { ...IDLE_CAPITAL_DEFAULT_CONFIG };
+    }
     return {
       kind,
       enabled: r.enabled,
-      config: hasCfg ? cfg : kind === 'yield_drift' ? { ...YIELD_DRIFT_DEFAULT_CONFIG } : {},
+      config: hasCfg ? cfg : fallback,
       updatedAt: r.updatedAt ? r.updatedAt.toISOString() : null,
       updatedBy: r.updatedBy ?? null,
     };

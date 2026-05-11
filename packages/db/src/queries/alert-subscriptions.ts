@@ -31,6 +31,25 @@ export const YIELD_DRIFT_DEFAULT_CONFIG: YieldDriftConfig = {
   cooldownHours: 24,
 };
 
+// M3 PR 3 — idle-capital nudge config.
+//   minIdleUsdc    — don't ping below this much USDC sitting in wallet.
+//                    Filters out dev wallets / petty cash.
+//   minDwellHours  — how long the balance must have sat (no qualifying
+//                    outflow) before counting as "idle". Default 3 days.
+//   cooldownHours  — don't re-ping the same wallet within this window
+//                    after an alert. Default 2 days.
+export interface IdleCapitalConfig {
+  minIdleUsdc: number;
+  minDwellHours: number;
+  cooldownHours: number;
+}
+
+export const IDLE_CAPITAL_DEFAULT_CONFIG: IdleCapitalConfig = {
+  minIdleUsdc: 5000,
+  minDwellHours: 72,
+  cooldownHours: 48,
+};
+
 // Get one subscription. Returns null when the row hasn't been seeded yet
 // — fresh treasuries created between the migration and a worker tick
 // fall into this case. Callers that want a usable shape (the worker job
@@ -152,6 +171,27 @@ export function readYieldDriftConfig(row: AlertSubscriptionRow | null): YieldDri
   };
 }
 
+// Same field-level fallback pattern as readYieldDriftConfig: partial
+// jsonb (a future schema widening before a backfill) falls back to the
+// in-source defaults so the worker is never reading garbage.
+export function readIdleCapitalConfig(row: AlertSubscriptionRow | null): IdleCapitalConfig {
+  const raw = (row?.config ?? {}) as Partial<IdleCapitalConfig>;
+  return {
+    minIdleUsdc:
+      typeof raw.minIdleUsdc === 'number' && Number.isFinite(raw.minIdleUsdc)
+        ? raw.minIdleUsdc
+        : IDLE_CAPITAL_DEFAULT_CONFIG.minIdleUsdc,
+    minDwellHours:
+      typeof raw.minDwellHours === 'number' && Number.isFinite(raw.minDwellHours)
+        ? raw.minDwellHours
+        : IDLE_CAPITAL_DEFAULT_CONFIG.minDwellHours,
+    cooldownHours:
+      typeof raw.cooldownHours === 'number' && Number.isFinite(raw.cooldownHours)
+        ? raw.cooldownHours
+        : IDLE_CAPITAL_DEFAULT_CONFIG.cooldownHours,
+  };
+}
+
 // Idempotent "seed if missing" helper. The 0010 migration backfills every
 // existing treasury, but a treasury created later (after the migration ran)
 // has no row until its first edit. The settings page calls this on render
@@ -168,7 +208,7 @@ export async function ensureSubscriptionsForTreasury(
 ): Promise<void> {
   const KINDS: ReadonlyArray<{ kind: AlertKind; config: Record<string, unknown> }> = [
     { kind: 'yield_drift', config: { ...YIELD_DRIFT_DEFAULT_CONFIG } },
-    { kind: 'idle_capital', config: {} },
+    { kind: 'idle_capital', config: { ...IDLE_CAPITAL_DEFAULT_CONFIG } },
     { kind: 'anomaly', config: {} },
     { kind: 'concentration', config: {} },
     { kind: 'protocol_health', config: {} },

@@ -15,6 +15,53 @@ import {
 
 export type ActionStatus = ProposedActionRow['status'];
 
+// Action kinds that move USDC *out* of the wallet (or churn through it).
+// Used by the M3-3 idle-capital check to define "dwell": the clock starts
+// from the most recent outflow, because a wallet that just received a
+// withdraw is supposed to be full — that's the case we DO want to nudge.
+//
+// Adding `transfer` here ahead of M4-1 is intentional: the SQL filter
+// below builds its IN-list from this constant, so when transfer rows
+// start landing the existing query picks them up without an edit.
+//
+// Exported so a future caller (e.g., a chat copy line like "you haven't
+// deposited / transferred / rebalanced in N days") can reference the
+// same literal set and stay aligned with the query.
+export const WALLET_OUTFLOW_KINDS = ['deposit', 'transfer', 'rebalance'] as const;
+
+// Most recent successfully executed wallet outflow for the treasury. null
+// when the treasury has never executed one of the qualifying kinds
+// (fresh accounts, history-cleared dev DBs). Caller compares against
+// `treasuries.created_at` to handle the first-touch case.
+//
+// Reads `payload->>'kind'` because `kind` lives in the jsonb payload,
+// not a column. The index on (treasury_id, status) keeps this scan cheap
+// — `payload` lookups are filtered by treasury first.
+//
+// The IN-list is built from WALLET_OUTFLOW_KINDS (not hardcoded) so the
+// constant stays the single source of truth. Values are parameterized
+// via sql`...` rather than sql.raw to keep the safe-by-default pattern
+// even though these are compile-time constants today.
+export async function getLastWalletOutflowAt(db: Db, treasuryId: string): Promise<Date | null> {
+  const kinds = sql.join(
+    WALLET_OUTFLOW_KINDS.map((k) => sql`${k}`),
+    sql`, `,
+  );
+  const [row] = await db
+    .select({ executedAt: proposedActions.executedAt })
+    .from(proposedActions)
+    .where(
+      and(
+        eq(proposedActions.treasuryId, treasuryId),
+        eq(proposedActions.status, 'executed'),
+        sql`${proposedActions.payload} ->> 'kind' IN (${kinds})`,
+      ),
+    )
+    .orderBy(desc(proposedActions.executedAt))
+    .limit(1);
+  return row?.executedAt ?? null;
+}
+
 export type AuditActor = 'agent' | 'policy' | 'signer' | 'system' | { telegramId: string };
 
 function actorString(actor: AuditActor): string {
