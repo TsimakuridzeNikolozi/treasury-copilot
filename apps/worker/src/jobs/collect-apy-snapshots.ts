@@ -5,9 +5,17 @@ import type { Venue } from '@tc/types';
 import { db } from '../db';
 import { env } from '../env';
 
-// Venues with real APY readers in @tc/protocols. Drift / Marginfi remain
-// stubs (no reader), so the collector skips them silently. Adding a new
-// venue is a single line here once its protocol module ships a getter.
+const VENUE_READ_TIMEOUT_MS = 15_000;
+
+class VenueReadTimeout extends Error {
+  constructor(venue: Venue) {
+    super(`${venue} read timed out after ${VENUE_READ_TIMEOUT_MS}ms`);
+  }
+}
+
+// Venues with real APY readers in @tc/protocols. Adding a new venue is a
+// single line here once its protocol module ships a getter.
+// TODO(2E): add Drift and Marginfi entries once their protocol readers land.
 //
 // Tied to the policy module's allowedVenues set in spirit but not by
 // import: the collector serves the cross-tenant snapshot table; per-
@@ -46,8 +54,14 @@ function getConnection(): Connection {
 export async function collectApySnapshots(): Promise<void> {
   const conn = getConnection();
   for (const { venue, read } of SUPPORTED) {
+    let _timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const { apyDecimal } = await read(conn);
+      const { apyDecimal } = await Promise.race([
+        read(conn),
+        new Promise<never>((_, reject) => {
+          _timer = setTimeout(() => reject(new VenueReadTimeout(venue)), VENUE_READ_TIMEOUT_MS);
+        }),
+      ]).finally(() => clearTimeout(_timer));
       // Defensive range check: a future SDK bug returning NaN or a
       // negative would otherwise corrupt the trend later. Skip + log.
       if (!Number.isFinite(apyDecimal) || apyDecimal < 0 || apyDecimal > 1) {
@@ -58,6 +72,10 @@ export async function collectApySnapshots(): Promise<void> {
       }
       await insertApySnapshot(db, { venue, apyDecimal });
     } catch (err) {
+      if (err instanceof VenueReadTimeout) {
+        console.warn(`[collect-apy-snapshots] ${err.message}, skipping`);
+        continue;
+      }
       console.error(`[collect-apy-snapshots] ${venue} failed:`, err);
     }
   }

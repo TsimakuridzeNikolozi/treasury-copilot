@@ -35,7 +35,7 @@ import { bot } from '../bot';
 import { db } from '../db';
 import { sendTelegramNotification } from '../notifications';
 
-const DEDUPE_KEY = 'smoke_test:m3_pr_1';
+const DEDUPE_KEY = `smoke_test:m3_pr_1:${Date.now()}`;
 const DEDUPE_WINDOW_MS = 60_000;
 
 function parseTreasuryArg(): string | null {
