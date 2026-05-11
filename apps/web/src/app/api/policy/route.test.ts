@@ -115,11 +115,24 @@ describe('PATCH /api/policy', () => {
       treasury: { id: TREASURY_ID },
       role: 'owner',
     });
+    // M4 PR 1 — route reads existing policy to preserve
+    // maxSingleTransferUsdc (not in the patch body). Provide a stub.
+    mocks.getPolicy.mockResolvedValue({
+      requireApprovalAboveUsdc: '1000',
+      maxSingleActionUsdc: '10000',
+      maxSingleTransferUsdc: '10000',
+      maxAutoApprovedUsdcPer24h: '5000',
+      allowedVenues: ['kamino'],
+    });
     const res = await PATCH(patchReq(VALID_PATCH));
     expect(res.status).toBe(204);
     expect(mocks.upsertPolicy).toHaveBeenCalledWith(
       {},
-      expect.objectContaining({ treasuryId: TREASURY_ID, updatedBy: 'did:privy:x' }),
+      expect.objectContaining({
+        treasuryId: TREASURY_ID,
+        updatedBy: 'did:privy:x',
+        policy: expect.objectContaining({ maxSingleTransferUsdc: '10000' }),
+      }),
     );
   });
 });

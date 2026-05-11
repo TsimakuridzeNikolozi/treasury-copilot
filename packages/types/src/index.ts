@@ -50,10 +50,34 @@ export const RebalanceActionSchema = z.object({
 });
 export type RebalanceAction = z.infer<typeof RebalanceActionSchema>;
 
+// M4 PR 1 — arbitrary outflow. Unlike deposit/withdraw/rebalance, transfer
+// is venue-less: it moves USDC from the treasury wallet directly to a
+// third-party address. Persisted as a `proposed_actions` row with `venue=NULL`
+// (the column was made nullable in migration 0012).
+//
+// `tokenMint` is kept open in the schema (any base58 address) so future
+// multi-asset support is a server-side gate, not a type change. The signer
+// today rejects any mint other than USDC with a typed failure.
+//
+// `memo` is optional and capped at 180 chars to fit a single Solana memo ix
+// without overflowing the tx size limit. UTF-8 — the on-chain memo program
+// emits the bytes verbatim, no escaping.
+export const TransferActionSchema = z.object({
+  kind: z.literal('transfer'),
+  treasuryId: TreasuryIdSchema,
+  sourceWallet: SolanaAddressSchema,
+  recipientAddress: SolanaAddressSchema,
+  tokenMint: SolanaAddressSchema,
+  amountUsdc: UsdcAmountSchema,
+  memo: z.string().max(180).optional(),
+});
+export type TransferAction = z.infer<typeof TransferActionSchema>;
+
 export const ProposedActionSchema = z.discriminatedUnion('kind', [
   DepositActionSchema,
   WithdrawActionSchema,
   RebalanceActionSchema,
+  TransferActionSchema,
 ]);
 export type ProposedAction = z.infer<typeof ProposedActionSchema>;
 

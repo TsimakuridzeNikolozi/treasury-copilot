@@ -169,7 +169,11 @@ export const proposedActions = pgTable(
     payload: jsonb('payload').$type<ProposedAction>().notNull(),
     status: actionStatus('status').notNull().default('pending'),
     amountUsdc: numeric('amount_usdc', { precision: 20, scale: 6 }).notNull(),
-    venue: text('venue', { enum: VENUE_VALUES }).notNull(),
+    // M4 PR 1 — venue is nullable since `transfer` action rows touch no
+    // venue (they move USDC from the wallet directly to a third party).
+    // The 0012 migration drops the NOT NULL constraint. Deposit/withdraw/
+    // rebalance rows still populate it via venueFor() in queries/actions.ts.
+    venue: text('venue', { enum: VENUE_VALUES }),
     proposedBy: text('proposed_by').notNull(),
     policyDecision: jsonb('policy_decision').$type<PolicyDecision>(),
     telegramMessageId: integer('telegram_message_id'),
@@ -279,6 +283,18 @@ export const policies = pgTable('policies', {
     scale: 6,
   }).notNull(),
   maxSingleActionUsdc: numeric('max_single_action_usdc', { precision: 20, scale: 6 }).notNull(),
+  // M4 PR 1 — separate hard cap for `transfer` (and future `transfer_batch`).
+  // The existing maxSingleActionUsdc would hard-deny a payroll-sized transfer
+  // outright; this column lets transfers cap independently while
+  // deposit/withdraw/rebalance keep their tighter single-action ceiling.
+  // Default $10k matches maxSingleActionUsdc — operators bump per-treasury
+  // via the policy editor once transfers are a real workflow.
+  maxSingleTransferUsdc: numeric('max_single_transfer_usdc', {
+    precision: 20,
+    scale: 6,
+  })
+    .notNull()
+    .default('10000'),
   maxAutoApprovedUsdcPer24h: numeric('max_auto_approved_usdc_per_24h', {
     precision: 20,
     scale: 6,

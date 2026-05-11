@@ -94,11 +94,21 @@ export async function PATCH(req: Request) {
     return Response.json({ error: 'active_treasury_changed' }, { status: 409 });
   }
 
+  // M4 PR 1 — preserve maxSingleTransferUsdc from the existing row.
+  // The form doesn't surface this cap yet (transfer kind has no UI in
+  // M4-1), so the PATCH body omits it. Reading the existing policy
+  // first keeps the column at whatever it was previously (or
+  // DEFAULT_POLICY's value for fresh treasuries) instead of clobbering
+  // it on every save. When a later PR adds the editor, this read+merge
+  // pattern still works — the body just starts carrying the new field.
+  const existing = await getPolicy(db, resolved.treasury.id);
+
   await upsertPolicy(db, {
     treasuryId: resolved.treasury.id,
     policy: {
       requireApprovalAboveUsdc: parsed.data.requireApprovalAboveUsdc,
       maxSingleActionUsdc: parsed.data.maxSingleActionUsdc,
+      maxSingleTransferUsdc: existing.maxSingleTransferUsdc,
       maxAutoApprovedUsdcPer24h: parsed.data.maxAutoApprovedUsdcPer24h,
       allowedVenues: parsed.data.allowedVenues,
     },

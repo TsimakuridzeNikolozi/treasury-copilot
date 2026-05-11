@@ -20,6 +20,13 @@ export interface ProposeContext {
   // and rebalances). Injected so tests can stub it without RPC; production
   // callers get one from createRpcBalanceReader inside buildTools.
   balanceReader: BalanceReader;
+  // M4 PR 1 — recipients flagged pre_approved=true in the address book.
+  // Threaded through to policy.evaluate so an above-threshold transfer to
+  // a pre-approved recipient bypasses the approval card (still subject to
+  // the 24h velocity cap). Optional because M4-1 has no address book yet —
+  // M4-2 wires the source (getPreApprovedRecipientSet). Until then this
+  // is always omitted/undefined, which evaluate() treats as an empty set.
+  preApprovedRecipients?: ReadonlySet<string>;
 }
 
 export interface ProposeActionResult {
@@ -92,6 +99,13 @@ async function readSourceBalance(
       const available = await reader.positionUsdc(action.fromVenue);
       return { source: action.fromVenue, available };
     }
+    case 'transfer': {
+      // M4 PR 1 — transfers spend from the treasury wallet's USDC
+      // balance, same source as deposit. Same single-source reasoning:
+      // the signer constrains funds to the custody'd wallet.
+      const available = await reader.walletUsdc();
+      return { source: 'wallet', available };
+    }
   }
 }
 
@@ -116,7 +130,23 @@ export async function proposeAction(
   const recentAutoApprovedUsdc = await sumAutoApprovedSince(db, action.treasuryId, since);
   const effectivePolicy = policy ?? (await getPolicy(db, action.treasuryId));
 
-  let decision = evaluate(action, { recentAutoApprovedUsdc }, effectivePolicy);
+  // M4 PR 1 — thread preApprovedRecipients through to evaluate(). The
+  // set is undefined in M4-1 (no address book yet); M4-2's
+  // getPreApprovedRecipientSet(db, treasuryId) will populate ctx upstream
+  // in buildTools. Without explicitly forwarding here, the pre-approval
+  // bypass in evaluate() would be unreachable from the propose path —
+  // policy-unit tests would pass but real chat-driven transfers would
+  // always require approval.
+  let decision = evaluate(
+    action,
+    {
+      recentAutoApprovedUsdc,
+      ...(ctx.preApprovedRecipients !== undefined && {
+        preApprovedRecipients: ctx.preApprovedRecipients,
+      }),
+    },
+    effectivePolicy,
+  );
 
   // Skip the RPC call when the proposal is already going to fail. Saves a
   // round-trip on doomed actions (over-cap, disallowed venue, etc.) and

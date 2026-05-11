@@ -94,6 +94,10 @@ function statusFromDecision(kind: PolicyDecision['kind']): ActionStatus {
   }
 }
 
+// `transfer` rows are venue-less — return null so the (nullable since
+// migration 0012) `proposed_actions.venue` column stores NULL. The switch
+// is exhaustive over ProposedAction['kind']; adding a new kind without a
+// case here is a TypeScript error at the call site of insertProposedAction.
 function venueFor(action: ProposedAction): ProposedActionRow['venue'] {
   switch (action.kind) {
     case 'deposit':
@@ -101,6 +105,8 @@ function venueFor(action: ProposedAction): ProposedActionRow['venue'] {
       return action.venue;
     case 'rebalance':
       return action.fromVenue;
+    case 'transfer':
+      return null;
   }
 }
 

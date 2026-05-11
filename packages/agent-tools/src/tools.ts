@@ -3,8 +3,13 @@ import { type Db, ensureSubscriptionsForTreasury, listSubscriptions } from '@tc/
 import { getJupiterUsdcPosition, getJupiterUsdcSupplyApy } from '@tc/protocols/jupiter';
 import { getKaminoUsdcPosition, getKaminoUsdcSupplyApy } from '@tc/protocols/kamino';
 import { getSaveUsdcPosition, getSaveUsdcSupplyApy } from '@tc/protocols/save';
-import { getWalletUsdcBalance } from '@tc/protocols/usdc';
-import { DepositActionSchema, RebalanceActionSchema, WithdrawActionSchema } from '@tc/types';
+import { USDC_MINT_BASE58, getWalletUsdcBalance } from '@tc/protocols/usdc';
+import {
+  DepositActionSchema,
+  RebalanceActionSchema,
+  TransferActionSchema,
+  WithdrawActionSchema,
+} from '@tc/types';
 import { tool } from 'ai';
 import { z } from 'zod';
 import { createRpcBalanceReader } from './balance';
@@ -30,6 +35,22 @@ const RebalanceInput = RebalanceActionSchema.omit({
   kind: true,
   treasuryId: true,
   wallet: true,
+});
+// M4 PR 3 — transfer kind. `tokenMint` is also server-injected: today only
+// USDC is supported, so letting the AI fill it would just add a
+// hallucination surface (model picks SOL mint from chat context, etc.).
+// When multi-asset support lands, this is the seam to widen — accept a
+// mint or symbol from the AI and validate server-side.
+//
+// Without M4-2's address book, `recipientAddress` here MUST be a literal
+// base58 Solana address — the @tc/types schema's regex enforces it. M4-2
+// will add a sibling tool `proposeTransferByLabel` (or extend this one) to
+// accept address-book labels.
+const TransferInput = TransferActionSchema.omit({
+  kind: true,
+  treasuryId: true,
+  sourceWallet: true,
+  tokenMint: true,
 });
 
 // Inputs to buildTools — the chat route's view, before we derive the
@@ -102,6 +123,23 @@ export function buildTools(db: Db, ctx: ToolContext) {
             kind: 'rebalance',
             treasuryId: ctx.treasuryId,
             wallet: treasuryBase58,
+            ...input,
+          },
+          proposeCtx,
+        ),
+    }),
+    proposeTransfer: tool({
+      description:
+        "Propose sending USDC from the treasury wallet to an arbitrary external Solana address (payroll, vendor payment, on-chain settlement, etc.). The recipient MUST be a literal base58 Solana address (32-44 chars, no labels yet). Use this when the user asks to 'send', 'pay', 'wire', or 'transfer' USDC to someone — NOT for deposits/withdrawals to yield venues (those use proposeDeposit / proposeWithdraw). The source wallet and token mint are configured server-side (USDC only); do not ask the user for them. Optional `memo` (≤180 chars) attaches an on-chain note to the transfer; ask the user if they'd like to include one only when context suggests it (invoice number, payment reference, etc.).",
+      inputSchema: TransferInput,
+      execute: async (input) =>
+        proposeAction(
+          db,
+          {
+            kind: 'transfer',
+            treasuryId: ctx.treasuryId,
+            sourceWallet: treasuryBase58,
+            tokenMint: USDC_MINT_BASE58,
             ...input,
           },
           proposeCtx,

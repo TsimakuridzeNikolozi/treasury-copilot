@@ -49,6 +49,7 @@ export async function getPolicy(db: Db, treasuryId: string): Promise<Policy> {
   return {
     requireApprovalAboveUsdc: row.requireApprovalAboveUsdc,
     maxSingleActionUsdc: row.maxSingleActionUsdc,
+    maxSingleTransferUsdc: row.maxSingleTransferUsdc,
     maxAutoApprovedUsdcPer24h: row.maxAutoApprovedUsdcPer24h,
     allowedVenues: narrowVenues(row.allowedVenues),
   };
@@ -98,6 +99,7 @@ export async function upsertPolicy(db: Db, input: UpsertPolicyInput): Promise<vo
         treasuryId: input.treasuryId,
         requireApprovalAboveUsdc: input.policy.requireApprovalAboveUsdc,
         maxSingleActionUsdc: input.policy.maxSingleActionUsdc,
+        maxSingleTransferUsdc: input.policy.maxSingleTransferUsdc,
         maxAutoApprovedUsdcPer24h: input.policy.maxAutoApprovedUsdcPer24h,
         allowedVenues: input.policy.allowedVenues as Venue[],
         updatedBy: input.updatedBy,
@@ -108,6 +110,7 @@ export async function upsertPolicy(db: Db, input: UpsertPolicyInput): Promise<vo
         set: {
           requireApprovalAboveUsdc: input.policy.requireApprovalAboveUsdc,
           maxSingleActionUsdc: input.policy.maxSingleActionUsdc,
+          maxSingleTransferUsdc: input.policy.maxSingleTransferUsdc,
           maxAutoApprovedUsdcPer24h: input.policy.maxAutoApprovedUsdcPer24h,
           allowedVenues: input.policy.allowedVenues as Venue[],
           updatedBy: input.updatedBy,
@@ -124,6 +127,7 @@ export async function upsertPolicy(db: Db, input: UpsertPolicyInput): Promise<vo
           ? {
               requireApprovalAboveUsdc: before.requireApprovalAboveUsdc,
               maxSingleActionUsdc: before.maxSingleActionUsdc,
+              maxSingleTransferUsdc: before.maxSingleTransferUsdc,
               maxAutoApprovedUsdcPer24h: before.maxAutoApprovedUsdcPer24h,
               allowedVenues: before.allowedVenues,
             }

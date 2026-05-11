@@ -43,6 +43,24 @@ const rebalance = (amountUsdc: string, fromVenue: Venue = 'save'): ProposedActio
   wallet: SOURCE,
 });
 
+const RECIPIENT_A = '9xQeWvG816bUx9EPa1xCkYJyXmcAfg7vRfBxbCw5N3rN';
+const RECIPIENT_B = 'GokivDYuQXPZCWRkwMhdH2h91KpDQXBEmKgBjFvKMHJq';
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+const transfer = (
+  amountUsdc: string,
+  recipient: string = RECIPIENT_A,
+  memo?: string,
+): ProposedAction => ({
+  kind: 'transfer',
+  treasuryId: TEST_TREASURY_ID,
+  sourceWallet: SOURCE,
+  recipientAddress: recipient,
+  tokenMint: USDC_MINT,
+  amountUsdc,
+  ...(memo !== undefined && { memo }),
+});
+
 // Always-rich stub — used by the existing tests where balances are not the
 // thing under test. The number is large enough that even a 1000 USDC max-cap
 // proposal passes the balance gate. New balance-specific tests build their
@@ -190,6 +208,85 @@ describe.skipIf(SKIP)('proposeAction', () => {
       const denyingCtx: ProposeContext = { ...ctx, balanceReader: failingReader };
       const { decision } = await proposeAction(db, deposit('1000'), denyingCtx, policy);
       expect(decision.kind).toBe('deny');
+    });
+  });
+
+  describe('transfer kind (M4 PR 1 + 3)', () => {
+    it('lands status=approved on a small transfer with sufficient wallet balance', async () => {
+      const tightCtx: ProposeContext = {
+        ...ctx,
+        balanceReader: makeReader({ wallet: '1000' }),
+      };
+      const { row, decision } = await proposeAction(db, transfer('100'), tightCtx);
+      expect(decision.kind).toBe('allow');
+      expect(row.status).toBe('approved');
+      // Transfer rows are venue-less — confirm the 0012 migration's
+      // nullable venue + venueFor()'s `case 'transfer': return null` are
+      // wired correctly through to the DB insert.
+      expect(row.venue).toBeNull();
+    });
+
+    it('denies a transfer when the wallet has less USDC than requested', async () => {
+      const tightCtx: ProposeContext = {
+        ...ctx,
+        balanceReader: makeReader({ wallet: '0.4' }),
+      };
+      const { decision } = await proposeAction(db, transfer('10'), tightCtx);
+      expect(decision.kind).toBe('deny');
+      if (decision.kind === 'deny') {
+        expect(decision.reason).toMatch(/wallet has 0.4/);
+      }
+    });
+
+    it('escalates an above-threshold transfer to status=pending when recipient is NOT pre-approved', async () => {
+      // Default threshold = 1000; 1500 is above it. Empty
+      // preApprovedRecipients (default) → human gate.
+      const tightCtx: ProposeContext = {
+        ...ctx,
+        balanceReader: makeReader({ wallet: '10000' }),
+      };
+      const { row, decision } = await proposeAction(db, transfer('1500'), tightCtx);
+      expect(decision.kind).toBe('requires_approval');
+      expect(row.status).toBe('pending');
+    });
+
+    it('bypasses approval when recipient IS pre-approved (verifies the M4-2 wiring seam)', async () => {
+      // Critical regression guard: without the propose-context wiring fix
+      // from the M4-1 review, this would always escalate because
+      // preApprovedRecipients never made it from ProposeContext to
+      // evaluate(). If this test starts failing, the seam reverted.
+      const tightCtx: ProposeContext = {
+        ...ctx,
+        balanceReader: makeReader({ wallet: '10000' }),
+        preApprovedRecipients: new Set([RECIPIENT_A]),
+      };
+      const { row, decision } = await proposeAction(db, transfer('1500'), tightCtx);
+      expect(decision.kind).toBe('allow');
+      expect(row.status).toBe('approved');
+    });
+
+    it('pre-approval is recipient-scoped, not blanket', async () => {
+      const tightCtx: ProposeContext = {
+        ...ctx,
+        balanceReader: makeReader({ wallet: '10000' }),
+        preApprovedRecipients: new Set([RECIPIENT_B]),
+      };
+      // Action targets RECIPIENT_A; pre-approved set has B. Should still
+      // need approval.
+      const { decision } = await proposeAction(db, transfer('1500', RECIPIENT_A), tightCtx);
+      expect(decision.kind).toBe('requires_approval');
+    });
+
+    it('memo is persisted in the proposed_actions payload', async () => {
+      const tightCtx: ProposeContext = {
+        ...ctx,
+        balanceReader: makeReader({ wallet: '1000' }),
+      };
+      const { row } = await proposeAction(db, transfer('10', RECIPIENT_A, 'Q1 payroll'), tightCtx);
+      // payload is the canonical jsonb the executor + signer read from.
+      const payload = row.payload as { kind: string; memo?: string };
+      expect(payload.kind).toBe('transfer');
+      expect(payload.memo).toBe('Q1 payroll');
     });
   });
 

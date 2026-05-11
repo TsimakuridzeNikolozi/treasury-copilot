@@ -134,6 +134,13 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// Truncate a base58 address for display: first 4 + last 4 chars. Approver
+// scans for "does this end with the digits I expect" — full address is
+// available on click-to-copy.
+function shortAddr(addr: string): string {
+  return addr.length <= 12 ? addr : `${addr.slice(0, 4)}…${addr.slice(-4)}`;
+}
+
 function summaryLine(action: ProposedActionRow['payload']): string {
   switch (action.kind) {
     case 'deposit':
@@ -148,6 +155,22 @@ function summaryLine(action: ProposedActionRow['payload']): string {
         `<b>Rebalance</b> ${action.amountUsdc} USDC: ${escapeHtml(action.fromVenue)} → ${escapeHtml(action.toVenue)}`,
         `<i>wallet</i> <code>${escapeHtml(action.wallet)}</code>`,
       ].join('\n');
+    case 'transfer': {
+      // M4 PR 1 — transfer card. Includes the source wallet line
+      // (mirrors rebalance) — transfer is the highest-risk action type
+      // (arbitrary outflow to a third-party address), and the approver
+      // needs to see which wallet they're authorising a debit from
+      // before clicking approve. The recipient is truncated by shortAddr;
+      // full address-book label resolution lands with M4-3.
+      const lines = [
+        `<b>Transfer</b> ${action.amountUsdc} USDC → <code>${escapeHtml(shortAddr(action.recipientAddress))}</code>`,
+        `<i>wallet</i> <code>${escapeHtml(action.sourceWallet)}</code>`,
+      ];
+      if (action.memo !== undefined && action.memo.length > 0) {
+        lines.push(`<i>memo</i> ${escapeHtml(action.memo)}`);
+      }
+      return lines.join('\n');
+    }
   }
 }
 
