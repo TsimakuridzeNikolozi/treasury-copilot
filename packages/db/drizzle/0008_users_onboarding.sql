@@ -7,14 +7,12 @@
 --                       not started or already onboarded (disambiguated
 --                       via onboarded_at).
 --
--- Backfill: set onboarded_at = NOW() on every pre-existing user that
--- already has at least one treasury membership. Those users went
--- through the old auto-bootstrap flow and should not be bounced into
--- the wizard. Users WITHOUT a membership are orphans (stage-3
--- bootstrap failed pre-PR-5, or membership was manually cleaned up)
--- and need to walk through the wizard from step 1; leaving their
--- onboarded_at NULL routes them to /onboarding, where step 1's
--- (idempotent) bootstrap call will heal the orphan.
+-- Backfill: set onboarded_at = NOW() on every pre-existing user row
+-- so that accounts created before PR 5 skip the wizard entirely.
+-- Users with no treasury membership (orphans — stage-3 bootstrap
+-- failed pre-PR-5, or membership manually cleaned up) are included;
+-- page.tsx's orphan guard (onboarded_at non-null AND memberships = 0)
+-- redirects them to /onboarding so the wizard heals them from step 1.
 --
 -- Why this UPDATE is safe inside the migrator's wrapping transaction:
 -- both columns stay NULLABLE. Drizzle-orm's migrator runs all pending
@@ -28,8 +26,7 @@ ALTER TABLE "users" ADD COLUMN "onboarded_at" timestamp with time zone;
 ALTER TABLE "users" ADD COLUMN "onboarding_step" smallint;
 --> statement-breakpoint
 UPDATE "users" SET "onboarded_at" = NOW()
-WHERE "onboarded_at" IS NULL
-  AND "id" IN (SELECT DISTINCT "user_id" FROM "treasury_memberships");
+WHERE "onboarded_at" IS NULL;
 --> statement-breakpoint
 ALTER TABLE "users" ADD CONSTRAINT "users_onboarding_step_range_chk"
   CHECK ("onboarding_step" IS NULL OR ("onboarding_step" >= 1 AND "onboarding_step" <= 5));

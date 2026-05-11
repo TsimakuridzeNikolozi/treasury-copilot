@@ -132,7 +132,7 @@ export function StepGuardrails({
 
   const onUseDefaults = () => submit(policyToState(DEFAULT_POLICY), 'defaults');
   const onContinue = () => {
-    if (requireGtCap) return;
+    if (!formatValid || requireGtCap) return;
     submit(state, 'custom');
   };
 
@@ -186,7 +186,11 @@ export function StepGuardrails({
             {saving === 'defaults' && <Loader2Icon className="size-4 animate-spin" aria-hidden />}
             Use defaults
           </Button>
-          <Button type="submit" disabled={saving !== 'idle' || !formatValid || requireGtCap} className="gap-1.5">
+          <Button
+            type="submit"
+            disabled={saving !== 'idle' || !formatValid || requireGtCap}
+            className="gap-1.5"
+          >
             {saving === 'custom' && <Loader2Icon className="size-4 animate-spin" aria-hidden />}
             Continue
           </Button>
@@ -217,9 +221,7 @@ function UsdcField({
       <label htmlFor={id} className="font-medium text-sm">
         {label}
       </label>
-      <InputGroup
-        className={cn(error && 'border-destructive focus-within:ring-destructive')}
-      >
+      <InputGroup className={cn(error && 'border-destructive focus-within:ring-destructive')}>
         <InputGroupInput
           id={id}
           name={name}
