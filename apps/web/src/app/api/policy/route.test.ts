@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   verifyBearer: vi.fn(),
@@ -25,6 +25,10 @@ vi.mock('@tc/db', () => ({
   getPolicy: mocks.getPolicy,
   upsertPolicy: mocks.upsertPolicy,
 }));
+
+afterEach(() => {
+  vi.clearAllMocks();
+});
 
 const { GET, PATCH } = await import('./route');
 
@@ -115,15 +119,6 @@ describe('PATCH /api/policy', () => {
       treasury: { id: TREASURY_ID },
       role: 'owner',
     });
-    // M4 PR 1 — route reads existing policy to preserve
-    // maxSingleTransferUsdc (not in the patch body). Provide a stub.
-    mocks.getPolicy.mockResolvedValue({
-      requireApprovalAboveUsdc: '1000',
-      maxSingleActionUsdc: '10000',
-      maxSingleTransferUsdc: '10000',
-      maxAutoApprovedUsdcPer24h: '5000',
-      allowedVenues: ['kamino'],
-    });
     const res = await PATCH(patchReq(VALID_PATCH));
     expect(res.status).toBe(204);
     expect(mocks.upsertPolicy).toHaveBeenCalledWith(
@@ -131,8 +126,33 @@ describe('PATCH /api/policy', () => {
       expect.objectContaining({
         treasuryId: TREASURY_ID,
         updatedBy: 'did:privy:x',
+        // maxSingleTransferUsdc falls back to DEFAULT_POLICY ('10000') when
+        // omitted from the body (VALID_PATCH doesn't include it).
         policy: expect.objectContaining({ maxSingleTransferUsdc: '10000' }),
       }),
     );
+  });
+
+  it('400 when requireApprovalAboveUsdc exceeds effective maxSingleTransferUsdc', async () => {
+    mocks.verifyBearer.mockResolvedValue({ userId: 'did:privy:x' });
+    // The schema validation fires before resolveActiveTreasury, but mock it
+    // defensively in case the route order changes.
+    mocks.resolveActiveTreasury.mockResolvedValue({
+      treasury: { id: TREASURY_ID },
+      role: 'owner',
+    });
+    // requireApprovalAboveUsdc (5000) > maxSingleTransferUsdc (3000) — the
+    // policy engine would auto-deny all transfers above 3000 before the
+    // approval gate is even reached, which locks out any approval flow.
+    const res = await PATCH(
+      patchReq({
+        ...VALID_PATCH,
+        requireApprovalAboveUsdc: '5000',
+        maxSingleActionUsdc: '10000',
+        maxSingleTransferUsdc: '3000',
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(mocks.upsertPolicy).not.toHaveBeenCalled();
   });
 });

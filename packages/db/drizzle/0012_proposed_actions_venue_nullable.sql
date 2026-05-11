@@ -10,6 +10,14 @@
 --
 -- Safe under load: DROP NOT NULL only updates the column's catalog flag;
 -- it does NOT rewrite the table. No existing rows are affected (they all
--- have a venue today).
+-- have a venue today, so they all satisfy the CHECK below without a backfill).
+--
+-- The CHECK references payload->>'kind' because the schema stores the action
+-- discriminant inside the JSONB payload column — there is no separate
+-- action_kind column.
 
 ALTER TABLE "proposed_actions" ALTER COLUMN "venue" DROP NOT NULL;
+
+ALTER TABLE "proposed_actions"
+  ADD CONSTRAINT "proposed_actions_venue_transfer_check"
+  CHECK (((payload->>'kind') = 'transfer') OR (venue IS NOT NULL));

@@ -134,11 +134,11 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// Truncate a base58 address for display: first 4 + last 4 chars. Approver
-// scans for "does this end with the digits I expect" — full address is
-// available on click-to-copy.
+// Truncate a base58 address for display: first 6 + last 6 chars. 6+6 gives
+// the approver enough entropy to visually distinguish addresses; full address
+// is available on click-to-copy.
 function shortAddr(addr: string): string {
-  return addr.length <= 12 ? addr : `${addr.slice(0, 4)}…${addr.slice(-4)}`;
+  return addr.length <= 16 ? addr : `${addr.slice(0, 6)}…${addr.slice(-6)}`;
 }
 
 function summaryLine(action: ProposedActionRow['payload']): string {
@@ -161,9 +161,10 @@ function summaryLine(action: ProposedActionRow['payload']): string {
       // (arbitrary outflow to a third-party address), and the approver
       // needs to see which wallet they're authorising a debit from
       // before clicking approve. The recipient is truncated by shortAddr;
-      // full address-book label resolution lands with M4-3.
+      // full address-book label resolution lands with M4-2.
       const lines = [
         `<b>Transfer</b> ${action.amountUsdc} USDC → <code>${escapeHtml(shortAddr(action.recipientAddress))}</code>`,
+        `<i>to</i> <code>${escapeHtml(action.recipientAddress)}</code>`,
         `<i>wallet</i> <code>${escapeHtml(action.sourceWallet)}</code>`,
       ];
       if (action.memo !== undefined && action.memo.length > 0) {

@@ -47,10 +47,11 @@ describe('buildUsdcTransferInstructions', () => {
     const { instructions, extraSigners } = await buildUsdcTransferInstructions(makeAction(), ctx());
 
     expect(extraSigners).toEqual([]);
-    expect(instructions).toHaveLength(3);
+    expect(instructions).toHaveLength(4);
 
     const pids = instructions.map((ix) => ix.programId.toBase58());
-    expect(pids).toEqual([COMPUTE_BUDGET, ATA_PROGRAM, SPL_TOKEN]);
+    // setComputeUnitLimit (index 0), setComputeUnitPrice (index 1), ATA-create (index 2), transferChecked (index 3).
+    expect(pids).toEqual([COMPUTE_BUDGET, COMPUTE_BUDGET, ATA_PROGRAM, SPL_TOKEN]);
   });
 
   it('appends a memo ix when memo is set', async () => {
@@ -59,8 +60,8 @@ describe('buildUsdcTransferInstructions', () => {
       ctx(),
     );
 
-    expect(instructions).toHaveLength(4);
-    const memo = instructions[3];
+    expect(instructions).toHaveLength(5);
+    const memo = instructions[4];
     expect(memo?.programId.toBase58()).toBe(MEMO_PROGRAM_ID_BASE58);
     expect(memo?.keys).toEqual([]);
     // utf-8 bytes round-trip via the Buffer constructor.
@@ -75,11 +76,11 @@ describe('buildUsdcTransferInstructions', () => {
   });
 
   it('rejects an empty memo string from being emitted as a no-op ix', async () => {
-    // Defensive: an explicit empty memo should not produce a 4th ix. The
+    // Defensive: an explicit empty memo should not produce a 5th ix. The
     // optional-field semantics in the action type ("undefined OR present")
     // mean callers might pass `''` from a form input.
     const { instructions } = await buildUsdcTransferInstructions(makeAction({ memo: '' }), ctx());
-    expect(instructions).toHaveLength(3);
+    expect(instructions).toHaveLength(4);
   });
 
   it('encodes the amount as base units using mint decimals (6)', async () => {
@@ -90,7 +91,7 @@ describe('buildUsdcTransferInstructions', () => {
       makeAction({ amountUsdc: '100' }),
       ctx(),
     );
-    const transferIx = instructions[2];
+    const transferIx = instructions[3];
     expect(transferIx?.programId.toBase58()).toBe(SPL_TOKEN);
     // SPL token instructions encode the amount as the next 8 bytes after
     // the 1-byte discriminator.
@@ -104,7 +105,7 @@ describe('buildUsdcTransferInstructions', () => {
       makeAction({ amountUsdc: '0.123456' }),
       ctx(),
     );
-    const transferIx = instructions[2];
+    const transferIx = instructions[3];
     const amountLE = transferIx?.data.subarray(1, 9);
     expect(amountLE?.readBigUInt64LE(0)).toBe(123_456n);
   });

@@ -9,18 +9,12 @@ import Decimal from 'decimal.js';
 import type { BuiltInstructions, ProtocolCtx } from './types';
 import { USDC_MINT_BASE58 } from './usdc';
 
-// Hand-rolled token-transfer primitives. We deliberately do NOT depend on
-// `@solana/spl-token` here even though the package exposes the same helpers
-// — the workspace also pulls in a much older 0.1.8 version transitively
-// (via whirlpool-sdk inside solend-sdk's types), and the duplicate package
-// names confuse TypeScript's module resolution so it surfaces 0.1.8's API
-// even when a direct dep pins 0.4.14. Hand-rolling the three ixs we need
-// keeps the dep graph clean, the program-id allowlist auditable, and
-// removes a ~hundred-KB transitive dep — at the cost of ~40 lines we'd
-// otherwise hide inside an SDK helper.
+// Hand-rolled token-transfer primitives — deliberately avoids @solana/spl-token
+// because the workspace pulls in v0.1.8 transitively (whirlpool-sdk), which
+// confuses TypeScript module resolution into surfacing the old API over our v0.4.14.
 
-// Mainnet program ids. Pinned constants so the signer's TRANSFER_ALLOWED_PROGRAMS
-// set can reference them without importing from this builder.
+// Mainnet program ids — exported so TRANSFER_ALLOWED_PROGRAMS can reference them
+// without a separate import and the two can't silently diverge.
 export const TOKEN_PROGRAM_ID_BASE58 = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 export const ASSOCIATED_TOKEN_PROGRAM_ID_BASE58 = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
 export const MEMO_PROGRAM_ID_BASE58 = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
@@ -29,32 +23,25 @@ const TOKEN_PROGRAM_ID = new PublicKey(TOKEN_PROGRAM_ID_BASE58);
 const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey(ASSOCIATED_TOKEN_PROGRAM_ID_BASE58);
 const MEMO_PROGRAM_ID = new PublicKey(MEMO_PROGRAM_ID_BASE58);
 
-// USDC has 6 decimals. transferChecked requires the decimals match the
-// mint — passing the wrong value fails on-chain. Hard-coded because this
-// module is USDC-only today; multi-asset support is M4-future and would
-// read decimals from the mint account.
+// transferChecked requires decimals to match the mint on-chain; hard-coded
+// because this module is USDC-only today.
 const USDC_DECIMALS = 6;
 
-// Priority fee in micro-lamports per compute unit. Matches the Kamino /
-// Save SDKs' default "moderate" tier — enough to land during normal
-// congestion, not aggressive enough to overpay during quiet periods.
-// Fixed for now; future PR can read live priority-fee samples from the RPC.
+// Priority fee in micro-lamports per compute unit — "moderate" tier, matches
+// Kamino/Save SDKs' implicit default.
 const PRIORITY_FEE_MICROLAMPORTS_PER_CU = 100_000;
+// Explicit CU ceiling for a transferChecked + idempotent ATA-create.
+// Real consumption is ~15–25k; 50k is a comfortable buffer. Without an
+// explicit limit the runtime requests the chain default (1.4M CUs), which
+// makes the effective fee ceiling ~0.14 SOL — an outlier during congestion.
+const TRANSFER_COMPUTE_UNIT_LIMIT = 50_000;
 
-// ATA discriminator: byte 1 selects the idempotent variant (byte 0 is the
-// classic Create which errors when the ATA already exists). Stable since
-// 2022 — same as the @solana/spl-token helper emits.
+// byte 1 = idempotent create (byte 0 = classic, errors if ATA already exists). Stable since 2022.
 const ATA_IDEMPOTENT_DISCRIMINATOR = 1;
-// SPL Token program TransferChecked variant — instruction byte 12 in the
-// program's instruction enum. Stable since the program's initial release.
+// TransferChecked variant — ix byte 12 in the SPL Token enum. Stable since initial release.
 const TOKEN_TRANSFER_CHECKED_DISCRIMINATOR = 12;
 
-// PDA derivation for an Associated Token Account. Deterministic, no RPC:
-//   seeds = [owner, TOKEN_PROGRAM_ID, mint], programId = ASSOCIATED_TOKEN_PROGRAM_ID.
-// Matches @solana/spl-token's getAssociatedTokenAddressSync exactly.
-// `allowOwnerOffCurve` lets PDAs receive too — needed because not every
-// recipient address is on the Ed25519 curve, and forbidding it would
-// reject valid program-owned addresses.
+// seeds = [owner, TOKEN_PROGRAM_ID, mint]. `allowOwnerOffCurve` accepts PDAs as recipients.
 function deriveAssociatedTokenAddress(
   mint: PublicKey,
   owner: PublicKey,
@@ -70,10 +57,6 @@ function deriveAssociatedTokenAddress(
   return address;
 }
 
-// Build the idempotent ATA-create ix. ATA program v1 layout:
-//   accounts: [payer (signer, writable), ata (writable), owner, mint,
-//              SystemProgram, TOKEN_PROGRAM_ID]
-//   data:     [discriminator] (1 byte)
 function buildCreateAtaIdempotentInstruction(
   payer: PublicKey,
   ata: PublicKey,
@@ -94,12 +77,7 @@ function buildCreateAtaIdempotentInstruction(
   };
 }
 
-// Build the TransferChecked ix. SPL Token program layout:
-//   accounts: [source (writable), mint, dest (writable), owner (signer)]
-//   data:     [discriminator(1)] [amount u64-LE(8)] [decimals(1)]
-// The "Checked" variant verifies mint + decimals on-chain — catches a
-// stale or compromised token account where the mint somehow differs.
-// Same fee as plain Transfer.
+// "Checked" variant verifies mint + decimals on-chain at no extra fee cost.
 function buildTransferCheckedInstruction(
   source: PublicKey,
   mint: PublicKey,
@@ -124,43 +102,13 @@ function buildTransferCheckedInstruction(
   };
 }
 
-// Convert a decimal USDC string ("123.456789") to a base-units BigInt
-// (123456789n). The amountUsdc regex in @tc/types caps fraction digits at 6,
-// so this multiplication never loses precision; the integer-part is
-// unbounded, so we use BigInt (not Number) end-to-end.
+// Decimal.js avoids float precision loss past 2^53 for large integer parts.
 function toBaseUnits(amountUsdc: string): bigint {
-  // Decimal.js for the parse step (preserves arbitrary precision), then
-  // toFixed(0) to materialise the base-unit integer string. Going through
-  // Number would lose precision past 2^53; going through string-split
-  // would replicate logic that decimal.js already does correctly.
   return BigInt(new Decimal(amountUsdc).mul(10 ** USDC_DECIMALS).toFixed(0));
 }
 
-// M4 PR 1 — build the instructions for an approved USDC transfer.
-//
-// Pipeline:
-//   1. Priority fee (ComputeBudget setComputeUnitPrice). Mirrors the
-//      Kamino/Save/Jupiter SDKs' implicit priority-fee behavior; emitted
-//      explicitly here because this builder is hand-rolled.
-//   2. Recipient ATA setup (idempotent variant of the ATA-create ix).
-//      Idempotent — if the ATA already exists, the program no-ops. Cheap
-//      to always include; saves us a getAccountInfo RPC round-trip and a
-//      conditional branch.
-//   3. transferChecked from source ATA to recipient ATA. The "Checked"
-//      variant verifies the mint + decimals on-chain, catching a stale or
-//      compromised token account where mint somehow differs. Same fee.
-//   4. Optional memo. Plain SPL Memo v2 ix: no keys, data = utf-8 bytes
-//      of `action.memo`.
-//
-// USDC-only today. The builder throws on any other mint; the signer's
-// executeApproved catches the rejection.
-// `extraSigners` is always empty — the treasury wallet is the sole signer
-// (added by the signer as fee-payer, signatures[0]).
-//
-// `connection` is in the context for symmetry with other builders but not
-// used today: idempotent ATA-create + transferChecked don't need to read
-// chain state to construct the ix list. A future variant that pre-checks
-// ATA existence to skip the create ix would use it.
+// USDC-only; throws on any other mint. `connection` unused today (all derivations
+// are deterministic) but present for symmetry with other builders.
 export async function buildUsdcTransferInstructions(
   action: TransferAction,
   ctx: ProtocolCtx,
@@ -182,7 +130,8 @@ export async function buildUsdcTransferInstructions(
   const recipientAta = deriveAssociatedTokenAddress(mint, recipient, /* allowOwnerOffCurve */ true);
 
   const instructions: TransactionInstruction[] = [
-    // Priority fee.
+    // CU limit before price — convention; limit ix must precede price ix.
+    ComputeBudgetProgram.setComputeUnitLimit({ units: TRANSFER_COMPUTE_UNIT_LIMIT }),
     ComputeBudgetProgram.setComputeUnitPrice({
       microLamports: PRIORITY_FEE_MICROLAMPORTS_PER_CU,
     }),
@@ -193,9 +142,6 @@ export async function buildUsdcTransferInstructions(
   ];
 
   if (action.memo !== undefined && action.memo.length > 0) {
-    // Memo v2: no keys, data = utf-8 bytes. The on-chain program emits
-    // the bytes verbatim in tx logs — no escaping required by the program,
-    // though Telegram / log viewers may render UTF-8 with their own rules.
     instructions.push({
       programId: MEMO_PROGRAM_ID,
       keys: [],

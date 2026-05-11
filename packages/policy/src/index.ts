@@ -34,21 +34,11 @@ export const DEFAULT_POLICY: Policy = {
 
 export interface EvaluateContext {
   recentAutoApprovedUsdc: string;
-  // M4 PR 1 — recipients in the address book flagged pre_approved=true.
-  // For transfer kind, presence in this set lets a transfer above
-  // `requireApprovalAboveUsdc` bypass approval (still subject to the
-  // velocity cap). For other kinds the field is ignored.
-  //
-  // Optional so M4-1 callers (no address book yet — that's M4-2) can
-  // omit it; defaults to an empty set, which preserves today's "anything
-  // above threshold needs approval" semantics for transfers.
+  // Pre-approved recipients (address book, M4-2). For transfers, bypasses the
+  // human-approval gate but not the 24h velocity cap. Other kinds ignore it.
   preApprovedRecipients?: ReadonlySet<string>;
 }
 
-// `transfer` rows touch no venue. The venue-allowlist check downstream
-// is therefore a no-op for transfers (find over an empty array returns
-// undefined). Keep the function exhaustive — adding a new kind without a
-// case here is a TypeScript exhaustiveness error.
 export function actionVenues(action: ProposedAction): readonly Venue[] {
   switch (action.kind) {
     case 'deposit':
@@ -84,13 +74,8 @@ export function evaluate(
     return { kind: 'deny', reason: 'amount must be positive' };
   }
 
-  // M4 PR 1 — bifurcated single-action cap.
-  //   Transfers use maxSingleTransferUsdc (per-treasury, default $10k —
-  //   editable in /settings once the policy editor surfaces it).
-  //   All other kinds keep maxSingleActionUsdc.
-  // Bundling them would force operators to widen the deposit/withdraw
-  // ceiling just to enable a one-off larger payroll, which loses the
-  // safety property the original cap was protecting.
+  // Transfers get their own ceiling so payroll-sized outflows don't force
+  // widening the deposit/withdraw cap.
   const isTransfer = action.kind === 'transfer';
   const maxStr = isTransfer ? policy.maxSingleTransferUsdc : policy.maxSingleActionUsdc;
   const maxField = isTransfer ? 'maxSingleTransferUsdc' : 'maxSingleActionUsdc';
@@ -104,11 +89,8 @@ export function evaluate(
 
   const threshold = new Decimal(policy.requireApprovalAboveUsdc);
   if (amount.gt(threshold)) {
-    // M4 PR 1 — pre-approved recipients (populated from the address book
-    // in M4-2) let an over-threshold transfer skip the approval card and
-    // proceed to the velocity check. Other kinds ignore the set (the
-    // concept of "pre-approved recipient" only applies to outflows
-    // addressed to an external party).
+    // Pre-approved recipients (M4-2 address book) skip the human gate but
+    // still hit the 24h velocity check below.
     const recipient = isTransfer ? action.recipientAddress : null;
     const preApproved = context.preApprovedRecipients ?? new Set<string>();
     const recipientIsPreApproved = recipient !== null && preApproved.has(recipient);
@@ -118,8 +100,6 @@ export function evaluate(
         reason: `amount ${amount.toString()} exceeds requireApprovalAboveUsdc ${threshold.toString()}`,
       };
     }
-    // Fall through to the velocity check — pre-approval bypasses the
-    // human gate but still respects the 24h auto-approved budget.
   }
 
   const recent = new Decimal(context.recentAutoApprovedUsdc);
@@ -142,14 +122,8 @@ export function evaluate(
 // into `toVenue`. Both legs use the rebalance's `wallet` as the
 // destination/source, and the same `amountUsdc`.
 //
-// Trust boundary: only the policy module produces `allow` decisions. The
-// executor calls this helper with an already-approved rebalance; it cannot
-// mint allow decisions for legs the original rebalance didn't sanction.
-// `evaluate()` is the only other producer.
-//
-// Velocity-cap accounting is unaffected because the row's denormalized
-// `amount_usdc` and `policy_decision` (the rebalance) live on the parent row;
-// the derived legs never get persisted as their own rows.
+// Decomposes an approved rebalance into the two legs the executor drives sequentially.
+// Only the policy module produces `allow` decisions — the executor can't mint new ones.
 export function deriveRebalanceLegs(allow: Extract<PolicyDecision, { kind: 'allow' }>): {
   withdraw: Extract<PolicyDecision, { kind: 'allow' }>;
   deposit: Extract<PolicyDecision, { kind: 'allow' }>;

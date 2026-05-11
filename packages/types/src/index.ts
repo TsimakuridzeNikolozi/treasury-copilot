@@ -73,12 +73,22 @@ export const TransferActionSchema = z.object({
 });
 export type TransferAction = z.infer<typeof TransferActionSchema>;
 
-export const ProposedActionSchema = z.discriminatedUnion('kind', [
-  DepositActionSchema,
-  WithdrawActionSchema,
-  RebalanceActionSchema,
-  TransferActionSchema,
-]);
+export const ProposedActionSchema = z
+  .discriminatedUnion('kind', [
+    DepositActionSchema,
+    WithdrawActionSchema,
+    RebalanceActionSchema,
+    TransferActionSchema,
+  ])
+  .superRefine((data, ctx) => {
+    if (data.kind === 'transfer' && data.recipientAddress === data.sourceWallet) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'recipientAddress must differ from sourceWallet',
+        path: ['recipientAddress'],
+      });
+    }
+  });
 export type ProposedAction = z.infer<typeof ProposedActionSchema>;
 
 export const PolicyDecisionSchema = z.discriminatedUnion('kind', [

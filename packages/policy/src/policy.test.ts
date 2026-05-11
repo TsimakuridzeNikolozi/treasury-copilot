@@ -1,3 +1,4 @@
+import { ProposedActionSchema } from '@tc/types';
 import { describe, expect, it } from 'vitest';
 import type { EvaluateContext, Policy, ProposedAction } from './index';
 import { DEFAULT_POLICY, deriveRebalanceLegs, evaluate } from './index';
@@ -256,5 +257,38 @@ describe('policy.deriveRebalanceLegs', () => {
   it('throws when called with a non-rebalance action', () => {
     const dep = deposit('1');
     expect(() => deriveRebalanceLegs(allow(dep))).toThrow(/non-rebalance/);
+  });
+});
+
+describe('ProposedActionSchema — self-transfer guard', () => {
+  const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+  const TREASURY_ID = '00000000-0000-4000-8000-000000000001';
+
+  it('rejects a transfer where recipientAddress equals sourceWallet', () => {
+    const result = ProposedActionSchema.safeParse({
+      kind: 'transfer',
+      treasuryId: TREASURY_ID,
+      sourceWallet: SOURCE,
+      recipientAddress: SOURCE,
+      tokenMint: USDC_MINT,
+      amountUsdc: '10',
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const paths = result.error.issues.map((i) => i.path.join('.'));
+      expect(paths).toContain('recipientAddress');
+    }
+  });
+
+  it('accepts a transfer where recipientAddress differs from sourceWallet', () => {
+    const result = ProposedActionSchema.safeParse({
+      kind: 'transfer',
+      treasuryId: TREASURY_ID,
+      sourceWallet: SOURCE,
+      recipientAddress: '9xQeWvG816bUx9EPa1xCkYJyXmcAfg7vRfBxbCw5N3rN',
+      tokenMint: USDC_MINT,
+      amountUsdc: '10',
+    });
+    expect(result.success).toBe(true);
   });
 });

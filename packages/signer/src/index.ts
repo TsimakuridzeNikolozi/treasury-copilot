@@ -97,15 +97,8 @@ export type SignerConfig =
       signTimeoutMs: number;
     };
 
-// Per-action program allowlists. The signer holds the keys, so it has final
-// say over which programs may be CPI'd. Stricter than a global allowlist: if
-// a protocol SDK starts touching new programs, the affected path catches it
-// without widening trust for unrelated paths.
-//
-// Token / ATA / Memo program IDs are sourced from @tc/protocols/transfer so
-// the transfer builder and this allowlist can't drift — if a constant ever
-// gets renamed, both sites move together. Aliased on import to keep the
-// existing in-file names (used across 6 allowlist sets) stable.
+// Per-action allowlists — stricter than a global list so a new program in one
+// SDK path doesn't silently widen trust for unrelated paths.
 const SYSTEM_PROGRAM = SystemProgram.programId.toBase58();
 const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111';
 const ATA_PROGRAM = ASSOCIATED_TOKEN_PROGRAM_ID_BASE58;
@@ -201,25 +194,8 @@ const JUPITER_WITHDRAW_ALLOWED_PROGRAMS = new Set<string>([
   SPL_TOKEN_PROGRAM,
 ]);
 
-// M4 PR 1 — arbitrary USDC outflow (`transfer` kind).
-//
-// No venue programs in this allowlist — transfers touch only token
-// infrastructure plus the optional memo program. Pinned program ids:
-//   - ComputeBudget: priority fee ix that the transfer builder prepends.
-//   - ATA program:   idempotent recipient-ATA create.
-//   - SPL Token:     transferChecked.
-//   - Memo:          only emitted when the action carries a `memo` field.
-//
-// SystemProgram is intentionally NOT included — the builder emits no
-// top-level System ixs. (ATA-create CPIs to System internally to allocate
-// the account, but the allowlist only inspects top-level ix.programId, not
-// CPI'd programs.) The other allowlists in this file include System
-// because their builders DO emit System ixs; transfer does not, so keeping
-// it minimal preserves the "stricter than necessary" property.
-//
-// If a future builder edit (e.g., adding a wrapper or a price-feed ix)
-// introduces a new program, it surfaces as a typed failure here rather
-// than a silent broadcast.
+// SystemProgram intentionally absent — the transfer builder emits no top-level
+// System ixs (ATA-create CPIs to System internally, not at the tx level).
 const TRANSFER_ALLOWED_PROGRAMS = new Set<string>([
   COMPUTE_BUDGET_PROGRAM,
   ATA_PROGRAM,
