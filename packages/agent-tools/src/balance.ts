@@ -1,4 +1,5 @@
 import type { Connection, PublicKey } from '@solana/web3.js';
+import { getJupiterUsdcPosition } from '@tc/protocols/jupiter';
 import { getKaminoUsdcPosition } from '@tc/protocols/kamino';
 import { getSaveUsdcPosition } from '@tc/protocols/save';
 import { getWalletUsdcBalance } from '@tc/protocols/usdc';
@@ -37,9 +38,13 @@ export function createRpcBalanceReader(connection: Connection, owner: PublicKey)
           const r = await getSaveUsdcPosition(connection, owner);
           return r.amountUsdc;
         }
+        case 'jupiter': {
+          const r = await getJupiterUsdcPosition(connection, owner);
+          return r.amountUsdc;
+        }
         case 'drift':
         case 'marginfi':
-          // M1 doesn't ship builders for these — the policy engine already
+          // No builders shipped for these — the policy engine already
           // denies them via the allowlist before we ever reach the balance
           // check. If a future caller bypasses that gate, surface the gap
           // loudly rather than returning a fake "0".

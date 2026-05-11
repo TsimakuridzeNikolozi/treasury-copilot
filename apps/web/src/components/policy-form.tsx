@@ -16,7 +16,7 @@ import type { Venue } from '@tc/types';
 import { CheckCircle2Icon, InfoIcon, Loader2Icon } from 'lucide-react';
 import { useEffect, useId, useMemo, useState } from 'react';
 
-const M1_VENUES: readonly Venue[] = ['kamino', 'save'];
+const ENABLED_VENUES: readonly Venue[] = ['kamino', 'save', 'jupiter'];
 const DEFERRED_VENUES: readonly Venue[] = ['drift', 'marginfi'];
 
 interface PolicyFormMeta {
@@ -100,7 +100,7 @@ export function PolicyForm({
     return Number.isFinite(a) && Number.isFinite(b) && a > b;
   }, [state.requireApprovalAboveUsdc, state.maxSingleActionUsdc]);
 
-  const allowedCount = state.allowedVenues.filter((v) => M1_VENUES.includes(v)).length;
+  const allowedCount = state.allowedVenues.filter((v) => ENABLED_VENUES.includes(v)).length;
   const blocking = requireGtMax || allowedCount === 0;
 
   // Fade the "Saved" pulse after a few seconds so it doesn't pin forever.
@@ -210,11 +210,11 @@ export function PolicyForm({
 
         <Section
           title="Allowed venues"
-          description="Only venues on this list can be proposed. Drift & Marginfi land in M2."
+          description="Only venues on this list can be proposed. Drift & Marginfi are deferred."
         >
           <div className="flex flex-col gap-2">
             <div className="flex flex-wrap gap-2">
-              {M1_VENUES.map((v) => {
+              {ENABLED_VENUES.map((v) => {
                 const active = state.allowedVenues.includes(v);
                 return (
                   <button

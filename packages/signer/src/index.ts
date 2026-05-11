@@ -4,8 +4,12 @@ import {
   type Keypair,
   type PublicKey,
   SystemProgram,
-  type TransactionInstruction,
 } from '@solana/web3.js';
+import {
+  JUPITER_LEND_PROGRAM_ID_BASE58,
+  buildJupiterDepositInstructions,
+  buildJupiterWithdrawInstructions,
+} from '@tc/protocols/jupiter';
 import {
   KLEND_PROGRAM_ID_BASE58,
   buildKaminoDepositInstructions,
@@ -90,7 +94,7 @@ export type SignerConfig =
 // Per-action program allowlists. The signer holds the keys, so it has final
 // say over which programs may be CPI'd. Stricter than a global allowlist: if
 // a protocol SDK starts touching new programs, the affected path catches it
-// without widening trust for unrelated paths (e.g. the smoke transfer).
+// without widening trust for unrelated paths.
 const SYSTEM_PROGRAM = SystemProgram.programId.toBase58();
 const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111';
 const ATA_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
@@ -160,7 +164,31 @@ const SAVE_WITHDRAW_ALLOWED_PROGRAMS = new Set<string>([
   SWITCHBOARD_ONDEMAND_PROGRAM,
 ]);
 
-const SMOKE_TRANSFER_ALLOWED_PROGRAMS = new Set<string>([SYSTEM_PROGRAM]);
+// Jupiter Lend (Earn) deposit. The SDK's getDepositIxs returns at most two
+// outer ixs — an optional jlUSDC ATA-create and the deposit ix itself.
+// CPIs to the SPL Token program (token transfer) and to Fluid's liquidity
+// program happen inside the deposit ix, not at the outer tx level, so
+// they don't need to appear in the allowlist. System + Compute Budget +
+// SPL Token are kept here as defense-in-depth in case a future SDK minor
+// version adds priority fee or pre-flight ixs — failing closed on a new
+// program ID is the wrong default for an integration we own.
+const JUPITER_DEPOSIT_ALLOWED_PROGRAMS = new Set<string>([
+  JUPITER_LEND_PROGRAM_ID_BASE58,
+  SYSTEM_PROGRAM,
+  COMPUTE_BUDGET_PROGRAM,
+  ATA_PROGRAM,
+  SPL_TOKEN_PROGRAM,
+]);
+
+// Same set for withdraw: the SDK pattern is symmetric (optional underlying-
+// asset ATA-create + the withdraw ix).
+const JUPITER_WITHDRAW_ALLOWED_PROGRAMS = new Set<string>([
+  JUPITER_LEND_PROGRAM_ID_BASE58,
+  SYSTEM_PROGRAM,
+  COMPUTE_BUDGET_PROGRAM,
+  ATA_PROGRAM,
+  SPL_TOKEN_PROGRAM,
+]);
 
 function buildTreasurySigner(config: SignerConfig): TreasurySigner {
   switch (config.backend) {
@@ -178,10 +206,9 @@ function buildTreasurySigner(config: SignerConfig): TreasurySigner {
   }
 }
 
-// Phase 1, Step 2B: real Kamino Lend USDC deposit. Other venues/kinds fall
-// through to the 2A self-transfer smoke instruction so every approved action
-// still produces a real signature; demo stays uniform and the smoke path
-// remains the known-good baseline for diagnosing protocol-layer breakage.
+// Builds the live signer. Each (action.kind, action.venue) pair must be
+// handled by an explicit arm in executeApproved; any unhandled combination
+// fails closed with an ExecuteResult.failure rather than executing.
 export function createSigner(config: SignerConfig): Signer {
   const connection = new Connection(config.rpcUrl, { commitment: config.commitment });
   const treasurySigner = buildTreasurySigner(config);
@@ -236,10 +263,10 @@ export function createSigner(config: SignerConfig): Signer {
         };
       }
 
-      let instructions: TransactionInstruction[];
+      const ctx = { connection, owner: treasuryPubkey };
+      let instructions: Awaited<ReturnType<typeof buildKaminoDepositInstructions>>['instructions'];
       let extraSigners: Keypair[];
       let allowedPrograms: Set<string>;
-      const ctx = { connection, owner: treasuryPubkey };
       if (action.kind === 'deposit' && action.venue === 'kamino') {
         const built = await buildKaminoDepositInstructions(action, ctx);
         instructions = built.instructions;
@@ -260,21 +287,32 @@ export function createSigner(config: SignerConfig): Signer {
         instructions = built.instructions;
         extraSigners = built.extraSigners;
         allowedPrograms = SAVE_WITHDRAW_ALLOWED_PROGRAMS;
+      } else if (action.kind === 'deposit' && action.venue === 'jupiter') {
+        const built = await buildJupiterDepositInstructions(action, ctx);
+        instructions = built.instructions;
+        extraSigners = built.extraSigners;
+        allowedPrograms = JUPITER_DEPOSIT_ALLOWED_PROGRAMS;
+      } else if (action.kind === 'withdraw' && action.venue === 'jupiter') {
+        const built = await buildJupiterWithdrawInstructions(action, ctx);
+        instructions = built.instructions;
+        extraSigners = built.extraSigners;
+        allowedPrograms = JUPITER_WITHDRAW_ALLOWED_PROGRAMS;
       } else {
-        // TODO(2E): Drift, Marginfi.
-        // Rebalance never reaches here — the executor decomposes it into
-        // withdraw + deposit allow decisions via policy.deriveRebalanceLegs
-        // and calls executeApproved twice. This branch only catches future
-        // venues that lack builders.
-        instructions = [
-          SystemProgram.transfer({
-            fromPubkey: treasuryPubkey,
-            toPubkey: treasuryPubkey,
-            lamports: 0,
-          }),
-        ];
-        extraSigners = [];
-        allowedPrograms = SMOKE_TRANSFER_ALLOWED_PROGRAMS;
+        // Drift / Marginfi: deferred — blocked by the policy allowlist
+        // before they ever reach the signer. Rebalance never reaches
+        // here either — the executor decomposes it into withdraw +
+        // deposit allow decisions via policy.deriveRebalanceLegs and
+        // calls executeApproved twice. If we somehow land here it
+        // means an upstream invariant was bypassed; fail closed rather
+        // than producing a real signature for a no-op.
+        const venueDesc =
+          action.kind === 'rebalance'
+            ? `${action.fromVenue}->${action.toVenue}`
+            : action.venue;
+        return {
+          kind: 'failure',
+          error: `unsupported action ${action.kind}/${venueDesc}`,
+        };
       }
 
       // Defense against a poisoned dependency or a malicious edit to a protocol

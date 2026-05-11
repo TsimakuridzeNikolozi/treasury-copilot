@@ -68,8 +68,8 @@ export function withFinalizedSlot(connection: Connection): Connection {
 // `includeAtaIxs=true` so a treasury without a USDC ATA gets one auto-created
 // in the same tx — first deposits don't fail with "ATA not found".
 //
-// Only deposit is wired in 2B; withdraw, rebalance, and other venues fall
-// through to the smoke transfer in the signer.
+// Deposit and withdraw are both wired today; rebalance is decomposed by the
+// executor into two single-leg allow decisions.
 export async function buildKaminoDepositInstructions(
   action: DepositAction,
   ctx: KaminoCtx,

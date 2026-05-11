@@ -1,5 +1,6 @@
 import type { Connection, PublicKey } from '@solana/web3.js';
 import type { Db } from '@tc/db';
+import { getJupiterUsdcPosition, getJupiterUsdcSupplyApy } from '@tc/protocols/jupiter';
 import { getKaminoUsdcPosition, getKaminoUsdcSupplyApy } from '@tc/protocols/kamino';
 import { getSaveUsdcPosition, getSaveUsdcSupplyApy } from '@tc/protocols/save';
 import { getWalletUsdcBalance } from '@tc/protocols/usdc';
@@ -60,7 +61,7 @@ export function buildTools(db: Db, ctx: ToolContext) {
   return {
     proposeDeposit: tool({
       description:
-        'Propose a USDC deposit into a yield venue (kamino, save). The treasury wallet is configured server-side; do not ask the user for it. Returns the policy decision.',
+        'Propose a USDC deposit into a yield venue (kamino, save, jupiter). The treasury wallet is configured server-side; do not ask the user for it. Returns the policy decision.',
       inputSchema: DepositInput,
       execute: async (input) =>
         proposeAction(
@@ -76,7 +77,7 @@ export function buildTools(db: Db, ctx: ToolContext) {
     }),
     proposeWithdraw: tool({
       description:
-        'Propose a USDC withdrawal from a yield venue (kamino, save). The destination is the treasury wallet, configured server-side; do not ask the user for it.',
+        'Propose a USDC withdrawal from a yield venue (kamino, save, jupiter). The destination is the treasury wallet, configured server-side; do not ask the user for it.',
       inputSchema: WithdrawInput,
       execute: async (input) =>
         proposeAction(
@@ -92,7 +93,7 @@ export function buildTools(db: Db, ctx: ToolContext) {
     }),
     proposeRebalance: tool({
       description:
-        'Propose moving USDC from one yield venue to another (e.g., save → kamino). Allowed venues: kamino, save. The wallet is the configured treasury; do not ask the user for it.',
+        'Propose moving USDC from one yield venue to another (e.g., save → kamino). Allowed venues: kamino, save, jupiter. The wallet is the configured treasury; do not ask the user for it.',
       inputSchema: RebalanceInput,
       execute: async (input) =>
         proposeAction(
@@ -108,9 +109,12 @@ export function buildTools(db: Db, ctx: ToolContext) {
     }),
     getTreasurySnapshot: tool({
       description:
-        "Fetch the treasury's USDC wallet balance plus per-venue (kamino, save) supplied position and current supply APY. Call this when the user asks to see positions or compare APYs, and ALWAYS call it before proposing a rebalance so the user has numbers to justify the move. Returns amounts as decimal-USDC strings (e.g. '5.234567') and APYs as fractional decimals (e.g. 0.0523 = 5.23%).",
+        "Fetch the treasury's USDC wallet balance plus per-venue (kamino, save, jupiter) supplied position and current supply APY. Call this when the user asks to see positions or compare APYs, and ALWAYS call it before proposing a rebalance so the user has numbers to justify the move. Returns amounts as decimal-USDC strings (e.g. '5.234567') and APYs as fractional decimals (e.g. 0.0523 = 5.23%). The jupiter sub-fields may be null if the Jupiter Lend SDK is temporarily unavailable; treat null as 'data missing' rather than zero.",
       inputSchema: z.object({}),
       execute: async () => {
+        // Kamino + Save are mature single-RPC reads; failure of any of them
+        // should fail the whole snapshot loudly (the user would be acting
+        // on partial data otherwise).
         const [walletUsdc, kaminoPos, kaminoApy, savePos, saveApy] = await Promise.all([
           getWalletUsdcBalance(ctx.connection, ctx.treasuryAddress),
           getKaminoUsdcPosition(ctx.connection, ctx.treasuryAddress),
@@ -118,6 +122,26 @@ export function buildTools(db: Db, ctx: ToolContext) {
           getSaveUsdcPosition(ctx.connection, ctx.treasuryAddress),
           getSaveUsdcSupplyApy(ctx.connection),
         ]);
+
+        // Jupiter Lend SDK is pre-1.0 and chains several sequential RPC
+        // calls inside getLendingTokenDetails; isolate its failures so a
+        // single hiccup doesn't take down the whole snapshot. If we
+        // observe similar flakiness in Kamino/Save later, generalise —
+        // for now Jupiter is the only venue that needs lenient treatment.
+        // The sanity-range assertion in supplyRateBnToApyDecimal will
+        // surface as a rejection reason in the console.warn below if the
+        // SDK scale ever changes underneath us.
+        const [jupiterPosResult, jupiterApyResult] = await Promise.allSettled([
+          getJupiterUsdcPosition(ctx.connection, ctx.treasuryAddress),
+          getJupiterUsdcSupplyApy(ctx.connection),
+        ]);
+        if (jupiterPosResult.status === 'rejected') {
+          console.warn('[snapshot] jupiter position read failed:', jupiterPosResult.reason);
+        }
+        if (jupiterApyResult.status === 'rejected') {
+          console.warn('[snapshot] jupiter apy read failed:', jupiterApyResult.reason);
+        }
+
         return {
           treasuryAddress: ctx.treasuryAddress.toBase58(),
           usdcBalance: walletUsdc.amountUsdc,
@@ -128,6 +152,12 @@ export function buildTools(db: Db, ctx: ToolContext) {
           save: {
             suppliedUsdc: savePos.amountUsdc,
             supplyApy: saveApy.apyDecimal,
+          },
+          jupiter: {
+            suppliedUsdc:
+              jupiterPosResult.status === 'fulfilled' ? jupiterPosResult.value.amountUsdc : null,
+            supplyApy:
+              jupiterApyResult.status === 'fulfilled' ? jupiterApyResult.value.apyDecimal : null,
           },
         };
       },

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const VENUES = ['kamino', 'save', 'drift', 'marginfi'] as const;
+export const VENUES = ['kamino', 'save', 'drift', 'marginfi', 'jupiter'] as const;
 export const VenueSchema = z.enum(VENUES);
 export type Venue = z.infer<typeof VenueSchema>;
 

@@ -14,12 +14,13 @@ export interface Policy {
 // Until they have real deposit/withdraw builders in @tc/protocols, allowing
 // them would let the executor try to build a tx for a venue that has no
 // builder, surfacing as a generic crash rather than a typed policy denial.
-// Add them back here when 2E lands.
+// Add them back here when 2E lands. Jupiter Lend (jupiter) joins the
+// allowlist with the M2 PR 5 protocol integration.
 export const DEFAULT_POLICY: Policy = {
   requireApprovalAboveUsdc: '1000',
   maxSingleActionUsdc: '10000',
   maxAutoApprovedUsdcPer24h: '5000',
-  allowedVenues: ['kamino', 'save'],
+  allowedVenues: ['kamino', 'save', 'jupiter'],
 };
 
 export interface EvaluateContext {

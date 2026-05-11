@@ -4,16 +4,17 @@ import { eq } from 'drizzle-orm';
 import type { Db } from '../client';
 import { auditLogs, policies } from '../schema';
 
-// Defense-in-depth: M1/M2 only ship builders for kamino + save. The PATCH
-// validator enforces this on writes, but a stray DB row (manual SQL, a
-// migration mishap, an attacker with raw DB access) could plant 'drift'
-// or 'marginfi' here. If we forwarded those to evaluate(), the policy
-// engine would happily allow a 'drift' proposal and the worker would
-// crash at execution time because no builder exists.
+// Defense-in-depth: only the venues with real deposit/withdraw builders
+// in @tc/protocols are accepted. The PATCH validator enforces this on
+// writes, but a stray DB row (manual SQL, a migration mishap, an attacker
+// with raw DB access) could plant 'drift' or 'marginfi' here. If we
+// forwarded those to evaluate(), the policy engine would happily allow a
+// 'drift' proposal and the worker would crash at execution time because
+// no builder exists.
 //
-// Tighter than the type's enum: VenueSchema (in @tc/types) keeps all four
-// for forward compatibility — we re-narrow at this DB boundary.
-const ALLOWED_VENUES: readonly Venue[] = ['kamino', 'save'];
+// Tighter than the type's enum: VenueSchema (in @tc/types) keeps all
+// venues for forward compatibility — we re-narrow at this DB boundary.
+const ALLOWED_VENUES: readonly Venue[] = ['kamino', 'save', 'jupiter'];
 
 // Runtime narrow row strings → Venue[]. We don't `as Venue[]` because a
 // stray DB row containing 'drift' (etc.) must not silently slip past the
