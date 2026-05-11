@@ -1,6 +1,7 @@
 import type { PolicyDecision, ProposedAction, Venue } from '@tc/types';
 import { relations, sql } from 'drizzle-orm';
 import {
+  bigserial,
   check,
   index,
   integer,
@@ -23,6 +24,17 @@ export const actionStatus = pgEnum('action_status', [
   'denied',
   'executed',
   'failed',
+]);
+
+// M3 PR 1 — notification delivery status. `queued` rows have been recorded
+// but not yet handed to the channel; `sent` rows succeeded; `failed` rows
+// hit a hard error (last_error is populated); `skipped` rows were dropped
+// at enqueue time (no chat configured, dedupe window hit, etc.).
+export const notificationStatus = pgEnum('notification_status', [
+  'queued',
+  'sent',
+  'failed',
+  'skipped',
 ]);
 
 const VENUE_VALUES = [
@@ -275,6 +287,96 @@ export const policies = pgTable('policies', {
   updatedBy: text('updated_by'),
 });
 
+// M3 PR 1 — outbound notifications (alerts, digests, anomaly callouts).
+// Distinct from approval cards: those are tracked on proposed_actions.
+// telegram_message_id. A notification row is the record of a *non-approval*
+// message we sent (or skipped, or failed). Today the only channel is
+// 'telegram'; the column is preserved so adding 'email' / 'slack' later is
+// a single new value, not a schema change.
+//
+// Dedupe windows are enforced at the query layer (findRecentByDedupeKey
+// with a `withinMs` window). The composite (treasury_id, dedupe_key,
+// created_at) index makes that scan a single index-only read. We
+// intentionally do NOT use a UNIQUE partial index on (treasury_id,
+// dedupe_key) — a strict unique would prevent re-sending the same
+// dedupe_key after the cooldown expired (e.g. yield_drift:kamino:save
+// firing once a week after the 24h cooldown), which is the whole point of
+// the time-bounded dedupe contract.
+export const notifications = pgTable(
+  'notifications',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    // ON DELETE: default (NO ACTION). Notification history outlives
+    // treasury config, same reasoning as proposed_actions and audit_logs.
+    treasuryId: uuid('treasury_id')
+      .references(() => treasuries.id)
+      .notNull(),
+    // Plain text, mirrors audit_logs.kind — string literals at the call
+    // site. Examples: 'yield_drift', 'idle_capital', 'weekly_digest',
+    // 'anomaly:yield_underperformance', 'protocol_health:save:paused'.
+    kind: text('kind').notNull(),
+    payload: jsonb('payload'),
+    // 'telegram' for v1; reserved for 'email' / 'slack' once those land.
+    channel: text('channel').notNull().default('telegram'),
+    // Snapshotted at send time so a mid-flight reconfig of
+    // treasuries.telegram_chat_id doesn't break post-send edits or
+    // diagnostics. Null on `queued` (set when status flips to sent).
+    telegramChatId: text('telegram_chat_id'),
+    telegramMessageId: integer('telegram_message_id'),
+    // Used for cooldown dedupe windows via findRecentByDedupeKey.
+    // NULL means "no dedupe; always send".
+    dedupeKey: text('dedupe_key'),
+    status: notificationStatus('status').notNull().default('queued'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    sentAt: timestamp('sent_at', { withTimezone: true }),
+    // Free-form failure detail. Populated when status='failed' for ops triage.
+    lastError: text('last_error'),
+  },
+  (t) => [
+    // Per-treasury history view ordered most-recent-first.
+    index('notifications_treasury_id_created_at_idx').on(t.treasuryId, t.createdAt),
+    // Dedupe lookup: scoped to (treasury, key) ordered by createdAt so
+    // findRecentByDedupeKey can read the latest row for the window check.
+    index('notifications_dedupe_idx').on(t.treasuryId, t.dedupeKey, t.createdAt),
+    // Ops view of stuck/failed rows.
+    index('notifications_status_idx').on(t.status),
+  ],
+);
+
+// M3 PR 1 — cross-treasury, append-only APY time series. One row per
+// venue per collector tick (hourly, with jitter). Single shared table
+// rather than per-treasury because supply APY is a property of the venue,
+// not the depositor — every treasury reads the same series.
+//
+// Retention: kept raw forever in v1 (revisit at >100k rows/venue).
+// At hourly cadence: ~8760 rows/venue/year. With 3 wired venues that's
+// ~26k rows/year — comfortably under the rollup threshold.
+//
+// `bigserial` for the PK because time-series tables can outgrow uuid's
+// 16-byte index size in btree-on-pk reads; sequential ids also produce
+// better page locality for range scans. Mirrors the convention used in
+// most Postgres time-series tables.
+export const apySnapshots = pgTable(
+  'apy_snapshots',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    // Constrained to the same VENUE_VALUES enum as proposed_actions.venue
+    // so a stray collector run for a venue we don't recognize fails at the
+    // DB rather than producing silently-orphan rows.
+    venue: text('venue', { enum: VENUE_VALUES }).notNull(),
+    // 8 fractional digits is enough headroom for sub-bp precision
+    // (APY 0.05230000 = 5.230000%). Stored as NUMERIC for exact math when
+    // we compute drift averages downstream.
+    apyDecimal: numeric('apy_decimal', { precision: 10, scale: 8 }).notNull(),
+    capturedAt: timestamp('captured_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    // (venue, captured_at DESC) — every read path is "latest N for venue X"
+    // or "venue X between T1 and T2". Single composite index serves both.
+    index('apy_snapshots_venue_captured_at_idx').on(t.venue, t.capturedAt),
+  ],
+);
+
 // Relations
 
 export const usersRelations = relations(users, ({ many }) => ({
@@ -343,6 +445,13 @@ export const auditLogsRelations = relations(auditLogs, ({ one }) => ({
   }),
 }));
 
+export const notificationsRelations = relations(notifications, ({ one }) => ({
+  treasury: one(treasuries, {
+    fields: [notifications.treasuryId],
+    references: [treasuries.id],
+  }),
+}));
+
 export type ProposedActionRow = typeof proposedActions.$inferSelect;
 export type NewProposedActionRow = typeof proposedActions.$inferInsert;
 export type ApprovalRow = typeof approvals.$inferSelect;
@@ -357,3 +466,7 @@ export type TreasuryMembershipRow = typeof treasuryMemberships.$inferSelect;
 export type NewTreasuryMembershipRow = typeof treasuryMemberships.$inferInsert;
 export type PolicyRow = typeof policies.$inferSelect;
 export type NewPolicyRow = typeof policies.$inferInsert;
+export type NotificationRow = typeof notifications.$inferSelect;
+export type NewNotificationRow = typeof notifications.$inferInsert;
+export type ApySnapshotRow = typeof apySnapshots.$inferSelect;
+export type NewApySnapshotRow = typeof apySnapshots.$inferInsert;

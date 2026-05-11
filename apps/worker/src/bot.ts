@@ -243,6 +243,20 @@ export async function postApprovalCard(
   return { messageId: msg.message_id, chatId };
 }
 
+// Non-approval message helper. Same chat transport as postApprovalCard
+// (`bot.api.sendMessage`) but without the inline approve/deny keyboard —
+// used by the M3 notification dispatcher (yield-drift alerts, idle-capital
+// nudges, weekly digest, anomaly callouts). HTML parse mode matches the
+// approval card formatter so message bodies can include the same escapeHtml
+// inline-tag style.
+export async function sendPlainMessage(
+  chatId: string,
+  htmlBody: string,
+): Promise<{ messageId: number; chatId: string }> {
+  const msg = await bot.api.sendMessage(chatId, htmlBody, { parse_mode: 'HTML' });
+  return { messageId: msg.message_id, chatId };
+}
+
 export async function editApprovalCardWithExecution(
   row: ProposedActionRow,
   result: TerminalExecuteResult,

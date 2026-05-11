@@ -306,9 +306,7 @@ export function createSigner(config: SignerConfig): Signer {
         // means an upstream invariant was bypassed; fail closed rather
         // than producing a real signature for a no-op.
         const venueDesc =
-          action.kind === 'rebalance'
-            ? `${action.fromVenue}->${action.toVenue}`
-            : action.venue;
+          action.kind === 'rebalance' ? `${action.fromVenue}->${action.toVenue}` : action.venue;
         return {
           kind: 'failure',
           error: `unsupported action ${action.kind}/${venueDesc}`,

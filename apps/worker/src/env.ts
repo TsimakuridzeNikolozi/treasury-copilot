@@ -31,6 +31,13 @@ const baseEnv = z.object({
   ACTION_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(5000),
   EXECUTOR_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(3000),
 
+  // M3 PR 1 — hourly APY snapshot collector for the cross-treasury
+  // apy_snapshots table. Downstream M3 jobs (yield drift, idle nudge,
+  // weekly digest) read this series instead of fanning out live SDK
+  // reads. ±5min jitter to avoid synchronized RPC bursts.
+  APY_SNAPSHOT_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
+  APY_SNAPSHOT_JITTER_MS: z.coerce.number().int().nonnegative().default(300_000),
+
   SIGNER_COMMITMENT: z.enum(['processed', 'confirmed', 'finalized']).default('confirmed'),
   SIGNER_CONFIRM_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
   // Per-call signing timeout. Bounds the Turnkey API call separately from

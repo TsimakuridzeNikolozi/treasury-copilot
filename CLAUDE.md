@@ -120,6 +120,34 @@ The 0008 migration backfills `onboarded_at = NOW()` on every existing user — p
 
 **`brand.md`** at the repo root documents the **Inference** palette (cyan, minimal · technical) + **Manrope + JetBrains Mono** typography. `apps/web/src/app/globals.css.bak` keeps the pre-PR-5 stock shadcn neutrals if a rollback is needed. Future `frontend-design-guidelines` runs read `brand.md` automatically.
 
+### M3 PR 1 — proactive intelligence foundation
+
+PR 1 of M3 ships the cross-cutting plumbing the rest of M3 (yield-drift alerts, idle-capital nudges, weekly digest, anomaly checks) all depend on. No user-visible feature on its own. After pulling:
+
+```bash
+pnpm install                # adds @solana/web3.js + @tc/protocols to apps/worker
+pnpm db:migrate             # applies 0009 — adds notifications + apy_snapshots tables.
+                            # No backfill needed (both tables start empty).
+```
+
+Two optional new worker env vars; defaults are sensible:
+
+```bash
+# apps/worker/.env — both optional, defaults shown
+APY_SNAPSHOT_INTERVAL_MS=3600000   # 1h
+APY_SNAPSHOT_JITTER_MS=300000      # ±5min
+```
+
+**New tables (migration 0009).**
+- `notifications` — outbound non-approval messages (alerts, digests, anomaly callouts). Status enum `queued | sent | failed | skipped`. Dedupe is enforced at the query layer via `findRecentByDedupeKey` with a time window — the (treasury_id, dedupe_key, created_at) index is intentionally **non-unique** because the cooldown contract is time-bounded (e.g. yield_drift can re-fire after 24h). A strict unique constraint would break re-sends.
+- `apy_snapshots` — cross-treasury append-only APY time series. Single shared table keyed by `(venue, captured_at)`. Hourly collector (`apps/worker/src/jobs/collect-apy-snapshots.ts`) populates one row per wired venue (`kamino`, `save`, `jupiter`) per tick. **This is the source of truth for "current APY" across M3.** Downstream jobs MUST read from `apy_snapshots` (via `getLatestApy` / `getAvgApy` / `getApySeries`), not call live SDK readers, to avoid O(N×venues) RPC fan-out per check.
+
+**New worker modules.**
+- `apps/worker/src/notifications.ts` — `sendTelegramNotification({ treasuryId, kind, body, dedupeKey?, dedupeWindowMs? })`. End-to-end dispatcher: dedupe check → enqueue row → resolve treasury chat → post via `bot.sendPlainMessage` → mark sent/failed/skipped. Every outcome leaves exactly one `notifications` row behind. Failures are swallowed (no throw) so a periodic job looping over treasuries doesn't abort on one bad row.
+- `apps/worker/src/scheduled-jobs.ts` — generic periodic-job runner. Pass `{ name, intervalMs, jitterMs, runImmediately?, run }`; the dispatcher manages timers, in-flight guards (no overlapping ticks), jitter, and crash isolation (thrown jobs log + continue, never take the worker down). Mirrors `poller.ts:60-80` and `executor.ts:194` patterns.
+- `apps/worker/src/jobs/` — per-job entry points. PR 1 ships `collect-apy-snapshots.ts`.
+- `apps/worker/src/bot.ts` exposes `sendPlainMessage(chatId, htmlBody)` — non-approval Telegram message helper. Reused by the dispatcher and (in later M3 PRs) for digest / alert bodies.
+
 ## Architecture
 
 ### The trust boundary (security-critical)

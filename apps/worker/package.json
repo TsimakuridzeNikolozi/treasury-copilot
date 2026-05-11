@@ -12,12 +12,15 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
+    "smoke:notify": "tsx --env-file=.env src/scripts/test-notification.ts",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
+    "@solana/web3.js": "^1.95.0",
     "@tc/db": "workspace:*",
     "@tc/env": "workspace:*",
     "@tc/policy": "workspace:*",
+    "@tc/protocols": "workspace:*",
     "@tc/signer": "workspace:*",
     "@tc/types": "workspace:*",
     "grammy": "^1.42.0",
