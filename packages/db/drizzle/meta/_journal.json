@@ -85,6 +85,20 @@
       "when": 1779300000000,
       "tag": "0011_idle_capital_defaults",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1779400000000,
+      "tag": "0012_proposed_actions_venue_nullable",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1779400000001,
+      "tag": "0013_policy_max_single_transfer_usdc",
+      "breakpoints": true
     }
   ]
 }

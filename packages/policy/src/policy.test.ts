@@ -1,3 +1,4 @@
+import { ProposedActionSchema } from '@tc/types';
 import { describe, expect, it } from 'vitest';
 import type { EvaluateContext, Policy, ProposedAction } from './index';
 import { DEFAULT_POLICY, deriveRebalanceLegs, evaluate } from './index';
@@ -108,6 +109,121 @@ describe('policy.evaluate', () => {
   });
 });
 
+describe('policy.evaluate — transfer kind (M4 PR 1)', () => {
+  const RECIPIENT = '9xQeWvG816bUx9EPa1xCkYJyXmcAfg7vRfBxbCw5N3rN';
+  const RECIPIENT_B = 'GokivDYuQXPZCWRkwMhdH2h91KpDQXBEmKgBjFvKMHJq';
+  const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+  const transfer = (
+    amountUsdc: string,
+    overrides: Partial<{ recipient: string; mint: string }> = {},
+  ): ProposedAction => ({
+    kind: 'transfer',
+    treasuryId: TREASURY_ID,
+    sourceWallet: SOURCE,
+    recipientAddress: overrides.recipient ?? RECIPIENT,
+    tokenMint: overrides.mint ?? USDC_MINT,
+    amountUsdc,
+  });
+
+  it('allows below the threshold (small transfer auto-approves)', () => {
+    const decision = evaluate(transfer('500'), FRESH);
+    expect(decision.kind).toBe('allow');
+    if (decision.kind === 'allow') {
+      expect(decision.action.kind).toBe('transfer');
+    }
+  });
+
+  it('requires approval above threshold when recipient is NOT pre-approved', () => {
+    // default policy: requireApprovalAboveUsdc=1000, maxSingleTransferUsdc=10000.
+    const decision = evaluate(transfer('5000'), FRESH);
+    expect(decision.kind).toBe('requires_approval');
+  });
+
+  it('bypasses approval when recipient IS pre-approved (still subject to velocity)', () => {
+    const ctx: EvaluateContext = {
+      recentAutoApprovedUsdc: '0',
+      preApprovedRecipients: new Set([RECIPIENT]),
+    };
+    const decision = evaluate(transfer('5000'), ctx);
+    expect(decision.kind).toBe('allow');
+  });
+
+  it('pre-approved bypass is recipient-scoped, not blanket', () => {
+    // Pre-approved set contains RECIPIENT_B; the action targets RECIPIENT.
+    // The transfer should still require approval — the bypass must be
+    // keyed on the exact recipient.
+    const ctx: EvaluateContext = {
+      recentAutoApprovedUsdc: '0',
+      preApprovedRecipients: new Set([RECIPIENT_B]),
+    };
+    const decision = evaluate(transfer('5000'), ctx);
+    expect(decision.kind).toBe('requires_approval');
+  });
+
+  it('pre-approved recipient still respects the 24h velocity cap', () => {
+    // recent 4500 + action 5000 = 9500 > 5000 cap → escalate, even with
+    // pre-approval. The bypass is for the human gate, not the budget gate.
+    const ctx: EvaluateContext = {
+      recentAutoApprovedUsdc: '4500',
+      preApprovedRecipients: new Set([RECIPIENT]),
+    };
+    const decision = evaluate(transfer('5000'), ctx);
+    expect(decision.kind).toBe('requires_approval');
+    if (decision.kind === 'requires_approval') {
+      expect(decision.reason).toContain('cumulative');
+    }
+  });
+
+  it('denies above maxSingleTransferUsdc (separate cap from maxSingleActionUsdc)', () => {
+    // Default maxSingleTransferUsdc = 10000; 10000.000001 trips the cap.
+    const decision = evaluate(transfer('10000.000001'), FRESH);
+    expect(decision.kind).toBe('deny');
+    if (decision.kind === 'deny') {
+      expect(decision.reason).toContain('maxSingleTransferUsdc');
+    }
+  });
+
+  it('uses maxSingleTransferUsdc instead of maxSingleActionUsdc for transfers', () => {
+    // Custom policy with a wide transfer cap and a tight action cap.
+    // A 50k transfer is above maxSingleActionUsdc but under
+    // maxSingleTransferUsdc — should NOT trip the deny path. Velocity
+    // cap also widened so the test isolates the single-action ceiling
+    // (otherwise the 50k transfer would escalate on the budget gate).
+    const policy: Policy = {
+      ...DEFAULT_POLICY,
+      maxSingleActionUsdc: '10000',
+      maxSingleTransferUsdc: '100000',
+      maxAutoApprovedUsdcPer24h: '1000000',
+    };
+    const ctx: EvaluateContext = {
+      recentAutoApprovedUsdc: '0',
+      preApprovedRecipients: new Set([RECIPIENT]),
+    };
+    const decision = evaluate(transfer('50000'), ctx, policy);
+    expect(decision.kind).toBe('allow');
+  });
+
+  it('deposits keep using maxSingleActionUsdc (transfer cap does NOT apply)', () => {
+    // Same wide transfer cap, tight action cap. A 50k deposit must still
+    // be denied — the new field is transfer-only.
+    const policy: Policy = {
+      ...DEFAULT_POLICY,
+      maxSingleActionUsdc: '10000',
+      maxSingleTransferUsdc: '100000',
+    };
+    const decision = evaluate(deposit('50000'), FRESH, policy);
+    expect(decision.kind).toBe('deny');
+    if (decision.kind === 'deny') {
+      expect(decision.reason).toContain('maxSingleActionUsdc');
+    }
+  });
+
+  it('denies non-positive transfer amounts', () => {
+    expect(evaluate(transfer('0'), FRESH).kind).toBe('deny');
+  });
+});
+
 describe('policy.deriveRebalanceLegs', () => {
   const allow = (action: ProposedAction): Extract<ReturnType<typeof evaluate>, { kind: 'allow' }> =>
     ({ kind: 'allow', action }) as Extract<ReturnType<typeof evaluate>, { kind: 'allow' }>;
@@ -141,5 +257,38 @@ describe('policy.deriveRebalanceLegs', () => {
   it('throws when called with a non-rebalance action', () => {
     const dep = deposit('1');
     expect(() => deriveRebalanceLegs(allow(dep))).toThrow(/non-rebalance/);
+  });
+});
+
+describe('ProposedActionSchema — self-transfer guard', () => {
+  const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+  const TREASURY_ID = '00000000-0000-4000-8000-000000000001';
+
+  it('rejects a transfer where recipientAddress equals sourceWallet', () => {
+    const result = ProposedActionSchema.safeParse({
+      kind: 'transfer',
+      treasuryId: TREASURY_ID,
+      sourceWallet: SOURCE,
+      recipientAddress: SOURCE,
+      tokenMint: USDC_MINT,
+      amountUsdc: '10',
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const paths = result.error.issues.map((i) => i.path.join('.'));
+      expect(paths).toContain('recipientAddress');
+    }
+  });
+
+  it('accepts a transfer where recipientAddress differs from sourceWallet', () => {
+    const result = ProposedActionSchema.safeParse({
+      kind: 'transfer',
+      treasuryId: TREASURY_ID,
+      sourceWallet: SOURCE,
+      recipientAddress: '9xQeWvG816bUx9EPa1xCkYJyXmcAfg7vRfBxbCw5N3rN',
+      tokenMint: USDC_MINT,
+      amountUsdc: '10',
+    });
+    expect(result.success).toBe(true);
   });
 });

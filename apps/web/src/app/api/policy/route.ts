@@ -2,6 +2,7 @@ import { resolveActiveTreasury } from '@/lib/active-treasury';
 import { db } from '@/lib/db';
 import { verifyBearer } from '@/lib/privy';
 import { getPolicy, upsertPolicy } from '@tc/db';
+import { DEFAULT_POLICY } from '@tc/policy';
 import { z } from 'zod';
 
 // postgres-js needs Node APIs not available in the Edge runtime.
@@ -31,6 +32,9 @@ const PolicyPatch = z
   .object({
     requireApprovalAboveUsdc: decimalUsdc,
     maxSingleActionUsdc: decimalUsdc,
+    // Optional until the policy editor surfaces this field. When omitted,
+    // the existing DB value is preserved via DEFAULT_POLICY fallback.
+    maxSingleTransferUsdc: decimalUsdc.optional(),
     maxAutoApprovedUsdcPer24h: decimalUsdc,
     allowedVenues: z.array(venue).min(1, 'must allow at least one venue'),
     // Body-vs-cookie 409 contract for PATCH: client sends the treasuryId
@@ -44,7 +48,21 @@ const PolicyPatch = z
   .refine((p) => !gtAsDecimal(p.requireApprovalAboveUsdc, p.maxSingleActionUsdc), {
     message: 'requireApprovalAboveUsdc must be ≤ maxSingleActionUsdc',
     path: ['requireApprovalAboveUsdc'],
-  });
+  })
+  // Same invariant for the transfer cap. When omitted from the body the
+  // effective cap falls back to DEFAULT_POLICY — validate against that same
+  // value so the check matches what the upsert will actually persist.
+  .refine(
+    (p) =>
+      !gtAsDecimal(
+        p.requireApprovalAboveUsdc,
+        p.maxSingleTransferUsdc ?? DEFAULT_POLICY.maxSingleTransferUsdc,
+      ),
+    {
+      message: 'requireApprovalAboveUsdc must be ≤ maxSingleTransferUsdc',
+      path: ['requireApprovalAboveUsdc'],
+    },
+  );
 
 // 409 / Set-Cookie helpers (mirror the chat route's responses).
 function noActiveTreasury(setCookieHeader?: string): Response {
@@ -99,6 +117,9 @@ export async function PATCH(req: Request) {
     policy: {
       requireApprovalAboveUsdc: parsed.data.requireApprovalAboveUsdc,
       maxSingleActionUsdc: parsed.data.maxSingleActionUsdc,
+      // Falls back to DEFAULT_POLICY when the body omits this field (current
+      // policy editor has no UI for it). Callers that do supply it win.
+      maxSingleTransferUsdc: parsed.data.maxSingleTransferUsdc ?? DEFAULT_POLICY.maxSingleTransferUsdc,
       maxAutoApprovedUsdcPer24h: parsed.data.maxAutoApprovedUsdcPer24h,
       allowedVenues: parsed.data.allowedVenues,
     },

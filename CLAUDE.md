@@ -228,6 +228,65 @@ Reply in chat: deposit 45000 to kamino
 **Smoke testing.**
 - `pnpm --filter @tc/worker smoke:idle-capital` runs one pass. The script's header comment documents the SQL you'd run to backdate `executed_at` on the most recent outflow for fast iteration. For dev, lower `minIdleUsdc` to a value below your actual wallet balance (real dev wallets rarely hold $5k).
 
+### M4 PR 1+3 (bundled) — `transfer` action kind + chat tool
+
+This PR bundles **M4-1** (the structural `transfer` action kind wired through types → policy → signer → protocols → propose) and **M4-3** (the `proposeTransfer` chat tool). M4-2 (address book) is deferred — recipients must be raw base58 addresses in this PR; label resolution + pre-approval lookup land with M4-2. After pulling:
+
+```bash
+pnpm db:migrate         # applies 0012 + 0013:
+                        #   0012 — DROP NOT NULL on proposed_actions.venue
+                        #          (transfer rows are venue-less).
+                        #   0013 — ADD policies.max_single_transfer_usdc
+                        #          numeric(20,6) NOT NULL DEFAULT 10000.
+                        # No env changes. Both migrations are in-place
+                        # rewrites — safe under load.
+```
+
+**Trust-boundary ripples.** The `transfer` discriminant joins the existing chain at every layer:
+- `@tc/types` — `TransferActionSchema` joins the `ProposedAction` discriminated union with `sourceWallet`, `recipientAddress`, `tokenMint`, `amountUsdc`, optional `memo` (≤180 chars). `tokenMint` is kept open at the type level (forward-compat for multi-asset); USDC is the only mint the signer accepts today.
+- `@tc/policy` — `actionVenues('transfer') === []` (no venue check), new `maxSingleTransferUsdc` field on `Policy`, separate from `maxSingleActionUsdc` so a payroll-sized outflow isn't hard-denied at the yield-move ceiling. New `EvaluateContext.preApprovedRecipients?` set; for transfers above `requireApprovalAboveUsdc`, presence in the set bypasses the approval card (still subject to the 24h velocity cap). Empty default — M4-2's address book populates it.
+- `@tc/db` — `venueFor()` returns `null` for transfer rows (the column is now nullable). `getPolicy`/`upsertPolicy` round-trip `maxSingleTransferUsdc`. The web policy PATCH route reads-existing-then-merges so the existing form (no UI for the new cap) doesn't clobber it.
+- `@tc/protocols` — new `buildUsdcTransferInstructions` (in `packages/protocols/src/transfer.ts`). Hand-rolls three SPL primitives (ATA derivation, idempotent ATA-create, transferChecked) instead of depending on `@solana/spl-token` — that package's duplicate transitive versions (0.1.8 via whirlpool-sdk, 0.4.14 direct) caused TS module-resolution issues where the older API would surface. Hand-rolling removes the conflict and keeps the program-id allowlist auditable; the three ix layouts (ATA v1, Token TransferChecked, Memo v2) are stable, public, well-documented.
+- `@tc/signer` — new arm in `executeApproved`'s build switch routes `kind === 'transfer'` to `buildUsdcTransferInstructions`. New `TRANSFER_ALLOWED_PROGRAMS` set: System, ComputeBudget, ATA, SPL Token, Memo. No venue programs. Source-wallet validation extends to `transfer.sourceWallet`; recipient is intentionally NOT verified (any address you can pay is the point).
+- `@tc/agent-tools` — `readSourceBalance` switch handles `transfer` (reads wallet USDC, same source as deposit). New `proposeTransfer` chat tool added (M4-3): server-injects `kind`, `treasuryId`, `sourceWallet`, `tokenMint` (USDC-only); accepts `recipientAddress` (base58 only — no labels until M4-2), `amountUsdc`, optional `memo` (≤180 chars). New `ProposeContext.preApprovedRecipients?: ReadonlySet<string>` field is threaded into `evaluate` (always undefined in this PR; M4-2 populates from the address book). The seam is regression-tested in `propose.test.ts` so M4-2 can drop it in without re-discovering the wiring.
+- `apps/web/src/app/api/chat/route.ts` — system prompt extended to describe transfers, explicitly tells the model there's no address book yet (it must ask for the address rather than guess if the user names a recipient by label).
+- `apps/worker/src/bot.ts` — `summaryLine`'s `case 'transfer'` shows truncated recipient + source wallet line (mirrors rebalance; transfer is the highest-risk action type, approver needs to see which wallet is being debited) + optional memo. Full address-book label resolution is M4-2.
+
+**Verification — via chat (M4-3 path).** In `/chat`, ask: "send 0.5 USDC to <some Solana address you control>". The agent calls `proposeTransfer`; small amounts auto-approve and the executor delivers within seconds. Confirm on-chain via Solscan using the `tx_signature` on the resulting `proposed_actions` row.
+
+**Verification — manual SQL (fallback).** If the chat tool isn't an option (e.g., headless smoke), insert a hand-crafted row:
+
+```sql
+-- Replace <TREASURY_ID>, <YOUR_TREASURY_WALLET>, <RECIPIENT> with real values.
+-- Run with a small amount (e.g. '0.5' USDC) the first time.
+INSERT INTO proposed_actions (treasury_id, payload, status, amount_usdc, venue, proposed_by, policy_decision)
+VALUES (
+  '<TREASURY_ID>',
+  jsonb_build_object(
+    'kind', 'transfer',
+    'treasuryId', '<TREASURY_ID>',
+    'sourceWallet', '<YOUR_TREASURY_WALLET>',
+    'recipientAddress', '<RECIPIENT>',
+    'tokenMint', 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+    'amountUsdc', '0.5'
+  ),
+  'approved',
+  0.5,
+  NULL,
+  'smoke-test',
+  jsonb_build_object('kind', 'allow', 'action', jsonb_build_object(
+    'kind', 'transfer',
+    'treasuryId', '<TREASURY_ID>',
+    'sourceWallet', '<YOUR_TREASURY_WALLET>',
+    'recipientAddress', '<RECIPIENT>',
+    'tokenMint', 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+    'amountUsdc', '0.5'
+  ))
+);
+```
+
+The executor's existing single-tx path handles this without changes (the `kind === 'rebalance'` recovery branch is a no-op for transfer rows). On success the row transitions `approved → executing → executed` with `tx_signature` populated.
+
 ## Architecture
 
 ### The trust boundary (security-critical)

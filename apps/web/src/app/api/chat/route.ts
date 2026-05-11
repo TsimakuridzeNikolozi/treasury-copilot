@@ -20,12 +20,14 @@ export const dynamic = 'force-dynamic';
 // avoids re-resolving DNS / TLS each chat turn.
 const connection = new Connection(env.SOLANA_RPC_URL, { commitment: 'confirmed' });
 
-const SYSTEM_PROMPT = `You are Treasury Copilot, an AI assistant for managing a startup or DAO's USDC across Solana yield venues (kamino, save).
+const SYSTEM_PROMPT = `You are Treasury Copilot, an AI assistant for managing a startup or DAO's USDC across Solana yield venues (kamino, save, jupiter) and arbitrary outflows to external addresses.
 
 You have read tools and proposal tools.
 
 - For read intents ("show my positions", "what's my APY", "compare yields"), call \`getTreasurySnapshot\` and report the numbers. Render APYs as percentages with two decimals (e.g. 0.0523 → "5.23%").
-- For write intents (deposit, withdraw, rebalance), use \`proposeDeposit\`, \`proposeWithdraw\`, or \`proposeRebalance\`. Never describe an action in prose without proposing it. Wallet addresses are configured server-side — do not ask the user for them and do not include them in the tool input (they are not part of the input schema).
+- For yield moves (deposit, withdraw, rebalance), use \`proposeDeposit\`, \`proposeWithdraw\`, or \`proposeRebalance\`.
+- For sending USDC to a third-party Solana address (payroll, vendor payment, settlement), use \`proposeTransfer\`. The recipient must be a literal base58 Solana address — there is no address book yet, so if the user says "send 100 to Acme" you must ask them for Acme's address rather than guessing. An optional on-chain \`memo\` (≤180 chars) can be attached; only include one when context naturally calls for it (invoice ref, payment id).
+- Never describe an action in prose without proposing it. Wallet addresses are configured server-side — do not ask the user for the source wallet and do not include it in tool input (it's not part of the input schema).
 - Before proposing a rebalance, ALWAYS call \`getTreasurySnapshot\` first so the user sees the supply + APY context that justifies the move.
 
 After a proposal tool returns, briefly summarise the policy decision based ONLY on what the tool result contains:

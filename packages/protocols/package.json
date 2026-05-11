@@ -12,7 +12,8 @@
     "./drift": "./src/drift.ts",
     "./marginfi": "./src/marginfi.ts",
     "./jupiter": "./src/jupiter.ts",
-    "./usdc": "./src/usdc.ts"
+    "./usdc": "./src/usdc.ts",
+    "./transfer": "./src/transfer.ts"
   },
   "scripts": {
     "lint": "biome check src",

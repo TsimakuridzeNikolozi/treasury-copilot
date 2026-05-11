@@ -4,4 +4,5 @@ export * as drift from './drift';
 export * as marginfi from './marginfi';
 export * as jupiter from './jupiter';
 export * as usdc from './usdc';
+export * as transfer from './transfer';
 export type { BuiltInstructions, ProtocolCtx } from './types';

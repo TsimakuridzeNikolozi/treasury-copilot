@@ -21,6 +21,7 @@ afterAll(async () => {
 const TIGHTER: Policy = {
   requireApprovalAboveUsdc: '500',
   maxSingleActionUsdc: '5000',
+  maxSingleTransferUsdc: '20000',
   maxAutoApprovedUsdcPer24h: '2000',
   allowedVenues: ['kamino'],
 };
@@ -47,6 +48,8 @@ describe.skipIf(SKIP)('queries/policies', () => {
       const policy = await getPolicy(db, TEST_TREASURY_ID);
       expect(policy.requireApprovalAboveUsdc).toBe('500.000000');
       expect(policy.maxSingleActionUsdc).toBe('5000.000000');
+      // M4 PR 1 — read-side round-trip for the new transfer cap.
+      expect(policy.maxSingleTransferUsdc).toBe('20000.000000');
       expect(policy.allowedVenues).toEqual(['kamino']);
     });
   });
@@ -71,6 +74,11 @@ describe.skipIf(SKIP)('queries/policies', () => {
       expect(rows[0]?.requireApprovalAboveUsdc).toBe('300.000000');
       expect(rows[0]?.updatedBy).toBe('did:privy:user-b');
       expect(rows[0]?.treasuryId).toBe(TEST_TREASURY_ID);
+      // M4 PR 1 — verify maxSingleTransferUsdc round-trips through upsert.
+      // Without this assertion, a regression in the insert/update column
+      // wiring would only surface via the higher-level policy route test,
+      // which mocks @tc/db. Catching it at the SQL boundary is cheaper.
+      expect(rows[0]?.maxSingleTransferUsdc).toBe('20000.000000');
 
       // Explicit ORDER BY — without it, Postgres can return rows in any
       // order, and JS sort by createdAt is unstable when two inserts land

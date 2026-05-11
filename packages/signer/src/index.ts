@@ -21,6 +21,12 @@ import {
   buildSaveDepositInstructions,
   buildSaveWithdrawInstructions,
 } from '@tc/protocols/save';
+import {
+  ASSOCIATED_TOKEN_PROGRAM_ID_BASE58,
+  MEMO_PROGRAM_ID_BASE58,
+  TOKEN_PROGRAM_ID_BASE58,
+  buildUsdcTransferInstructions,
+} from '@tc/protocols/transfer';
 import type { ExecuteResult, PolicyDecision } from '@tc/types';
 import { signSubmitConfirm } from './submit';
 import { createTurnkeyTreasurySigner } from './turnkey';
@@ -91,14 +97,12 @@ export type SignerConfig =
       signTimeoutMs: number;
     };
 
-// Per-action program allowlists. The signer holds the keys, so it has final
-// say over which programs may be CPI'd. Stricter than a global allowlist: if
-// a protocol SDK starts touching new programs, the affected path catches it
-// without widening trust for unrelated paths.
+// Per-action allowlists — stricter than a global list so a new program in one
+// SDK path doesn't silently widen trust for unrelated paths.
 const SYSTEM_PROGRAM = SystemProgram.programId.toBase58();
 const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111';
-const ATA_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
-const SPL_TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+const ATA_PROGRAM = ASSOCIATED_TOKEN_PROGRAM_ID_BASE58;
+const SPL_TOKEN_PROGRAM = TOKEN_PROGRAM_ID_BASE58;
 const ADDRESS_LOOKUP_TABLE_PROGRAM = 'AddressLookupTab1e1111111111111111111111111';
 // Pyth pull-oracle infra (Save's setup ixs may inline a price update).
 const PYTH_RECEIVER_PROGRAM = 'rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ';
@@ -190,6 +194,15 @@ const JUPITER_WITHDRAW_ALLOWED_PROGRAMS = new Set<string>([
   SPL_TOKEN_PROGRAM,
 ]);
 
+// SystemProgram intentionally absent — the transfer builder emits no top-level
+// System ixs (ATA-create CPIs to System internally, not at the tx level).
+const TRANSFER_ALLOWED_PROGRAMS = new Set<string>([
+  COMPUTE_BUDGET_PROGRAM,
+  ATA_PROGRAM,
+  SPL_TOKEN_PROGRAM,
+  MEMO_PROGRAM_ID_BASE58,
+]);
+
 function buildTreasurySigner(config: SignerConfig): TreasurySigner {
   switch (config.backend) {
     case 'local':
@@ -250,12 +263,18 @@ export function createSigner(config: SignerConfig): Signer {
       // ops-controlled destinations, the destinationWallet check should move
       // to policy (which owns "where money may go"); the source-wallet check
       // stays here since "do I custody this key" is a signer concern.
+      //
+      // `transfer` joins the check via its `sourceWallet` — same shape as
+      // deposit. Recipient is intentionally NOT verified here: "any address
+      // I can pay" is exactly the point of a transfer.
       const declared =
         action.kind === 'deposit'
           ? action.sourceWallet
           : action.kind === 'withdraw'
             ? action.destinationWallet
-            : null;
+            : action.kind === 'transfer'
+              ? action.sourceWallet
+              : null;
       if (declared !== null && declared !== treasuryAddress) {
         return {
           kind: 'failure',
@@ -297,6 +316,15 @@ export function createSigner(config: SignerConfig): Signer {
         instructions = built.instructions;
         extraSigners = built.extraSigners;
         allowedPrograms = JUPITER_WITHDRAW_ALLOWED_PROGRAMS;
+      } else if (action.kind === 'transfer') {
+        // M4 PR 1 — arbitrary USDC outflow. Venue-less; the builder
+        // routes by mint (USDC-only today; the builder throws on any
+        // other mint, which surfaces here as the awaited promise
+        // rejection in signSubmitConfirm's caller chain).
+        const built = await buildUsdcTransferInstructions(action, ctx);
+        instructions = built.instructions;
+        extraSigners = built.extraSigners;
+        allowedPrograms = TRANSFER_ALLOWED_PROGRAMS;
       } else {
         // Drift / Marginfi: deferred — blocked by the policy allowlist
         // before they ever reach the signer. Rebalance never reaches
