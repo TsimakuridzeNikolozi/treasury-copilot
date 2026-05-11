@@ -1,12 +1,23 @@
 import { bot } from './bot';
 import { env } from './env';
 import { startExecutor } from './executor';
+import { collectApySnapshots } from './jobs/collect-apy-snapshots';
 import { startActionPoller } from './poller';
+import { startScheduledJobs } from './scheduled-jobs';
 
 console.log(`[worker] booting in ${env.NODE_ENV} mode`);
 
 const stopPoller = startActionPoller();
 const stopExecutor = startExecutor();
+const stopScheduledJobs = startScheduledJobs([
+  {
+    name: 'collect-apy-snapshots',
+    intervalMs: env.APY_SNAPSHOT_INTERVAL_MS,
+    jitterMs: env.APY_SNAPSHOT_JITTER_MS,
+    runImmediately: true,
+    run: collectApySnapshots,
+  },
+]);
 
 let isShuttingDown = false;
 const shutdown = async (signal: string) => {
@@ -16,6 +27,10 @@ const shutdown = async (signal: string) => {
   try {
     stopPoller();
     stopExecutor();
+    // Drain in-flight scheduled jobs (e.g. APY collector mid-RPC) before
+    // stopping the bot — otherwise a partial tick can leave inserts
+    // unfinished. Bounded by STOP_DRAIN_TIMEOUT_MS inside the stop fn.
+    await stopScheduledJobs();
     await bot.stop();
   } catch (err) {
     console.error('[worker] shutdown error', err);

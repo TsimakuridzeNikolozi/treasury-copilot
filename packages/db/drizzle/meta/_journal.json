@@ -64,6 +64,13 @@
       "when": 1778900000000,
       "tag": "0008_users_onboarding",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1779100000000,
+      "tag": "0009_notifications_apy_snapshots",
+      "breakpoints": true
     }
   ]
 }
