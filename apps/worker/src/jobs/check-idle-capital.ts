@@ -109,17 +109,10 @@ async function checkTreasury(subscription: AlertSubscriptionRow): Promise<void> 
   }
   const config = readIdleCapitalConfig(subscription);
 
-  // 1. Read wallet balance. A flaky RPC here aborts THIS treasury only.
-  const conn = getConnection();
-  const owner = new PublicKey(treasury.walletAddress);
-  const wallet = await getWalletUsdcBalance(conn, owner);
-  const idleUsdc = new Decimal(wallet.amountUsdc);
-  if (idleUsdc.lt(config.minIdleUsdc)) return;
-
-  // 2. Dwell. Compare against MAX(treasury.created_at, lastOutflowAt) —
-  //    without the treasury floor, brand-new treasuries (no actions yet)
-  //    would fire immediately as soon as they're funded, which is the
-  //    opposite of "idle" (it's "just funded, give the user time").
+  // 1. Dwell check (DB) before wallet RPC — skip the RPC entirely for
+  //    treasuries that haven't passed the dwell threshold yet.
+  //    Compare against MAX(treasury.created_at, lastOutflowAt) so brand-new
+  //    treasuries (no actions yet) don't fire immediately on first funding.
   const lastOutflowAt = await getLastWalletOutflowAt(db, treasuryId);
   const anchorMs = Math.max(
     treasury.createdAt.getTime(),
@@ -128,6 +121,13 @@ async function checkTreasury(subscription: AlertSubscriptionRow): Promise<void> 
   const dwellMs = Date.now() - anchorMs;
   const dwellHours = dwellMs / 3_600_000;
   if (dwellHours < config.minDwellHours) return;
+
+  // 2. Read wallet balance. A flaky RPC here aborts THIS treasury only.
+  const conn = getConnection();
+  const owner = new PublicKey(treasury.walletAddress);
+  const wallet = await getWalletUsdcBalance(conn, owner);
+  const idleUsdc = new Decimal(wallet.amountUsdc);
+  if (idleUsdc.lt(config.minIdleUsdc)) return;
 
   // 3. Best venue APY. If no usable snapshot exists for any allowed
   //    venue, we have nothing to suggest — bail.

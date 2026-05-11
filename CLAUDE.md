@@ -213,7 +213,7 @@ IDLE_CAPITAL_CHECK_JITTER_MS=3600000     # ±1h
   6. Dispatch with dedupeKey `idle_capital:<walletAddress>` and `cooldownHours`-wide window. `runImmediately: false`.
 
 **Telegram body example.**
-```
+```text
 Idle USDC
 ~$45,000 has sat in your wallet for 4 days.
 At Kamino's current 5.40% APY that's ~$202/mo of yield foregone.
