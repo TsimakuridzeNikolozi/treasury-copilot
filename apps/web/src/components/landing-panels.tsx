@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { useLogin, usePrivy } from '@privy-io/react-auth';
 import { ArrowRightIcon, CoinsIcon, ShieldCheckIcon, SparklesIcon } from 'lucide-react';
 import Link from 'next/link';
+import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 
 // Two client islands hosted on the otherwise-server-rendered "/" page.
@@ -17,12 +18,25 @@ import { useRouter } from 'next/navigation';
 
 export function SignInPanel() {
   const router = useRouter();
-  // Privy sets its session cookie client-side after the OTP modal
-  // closes. The "/" page is server-rendered, so without an explicit
-  // refresh the user keeps seeing the SignInPanel even though they're
-  // signed in. `router.refresh()` re-runs the server component with
-  // the fresh cookie, which then redirects to /onboarding (or renders
-  // SignedInPanel for returning users).
+  const { ready, authenticated } = usePrivy();
+
+  // The server renders SignInPanel when the Privy access token is absent
+  // or expired at SSR time. The client-side Privy SDK then initialises
+  // and may silently refresh an expired token using the long-lived
+  // refresh token. When that happens `authenticated` flips to true while
+  // the page still shows SignInPanel — calling router.refresh() re-runs
+  // the server component with the new cookie so the correct view is
+  // shown without requiring any user interaction.
+  // This also covers the case where login() is a no-op because the user
+  // is already authenticated (expired token, fresh refresh) and onComplete
+  // never fires.
+  useEffect(() => {
+    if (ready && authenticated) router.refresh();
+  }, [ready, authenticated, router]);
+
+  // Privy sets its session cookie client-side after the OTP modal closes.
+  // `router.refresh()` re-runs the server component with the fresh cookie,
+  // which then redirects to /onboarding (or renders SignedInPanel).
   const { login } = useLogin({ onComplete: () => router.refresh() });
   return (
     <div className="flex flex-col items-center gap-3">
