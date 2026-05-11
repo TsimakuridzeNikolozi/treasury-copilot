@@ -37,3 +37,6 @@ coverage
 # solana keypairs — never commit signing material
 keys/
 *.keypair.json
+
+# brand preview
+.brand-preview

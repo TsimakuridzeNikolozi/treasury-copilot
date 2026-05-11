@@ -47,6 +47,8 @@ const userRow: UserRow = {
   email: 'a@b.c',
   createdAt: new Date('2026-05-01T00:00:00Z'),
   lastSeenAt: new Date('2026-05-09T00:00:00Z'),
+  onboardedAt: new Date('2026-05-09T00:00:00Z'),
+  onboardingStep: null,
 };
 
 function reqWith(cookieValue: string | null): Request {

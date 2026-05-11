@@ -51,10 +51,20 @@ function parseApproverIds(raw: string): string[] {
 export function TelegramConfigForm({
   initial,
   treasuryId,
+  // M2 PR 5: when one or both callbacks (onSaved, onSkip) are passed,
+  // the form is in "embedded wizard" mode. The sticky save bar is
+  // replaced with Skip / Save & continue CTAs. `onSaved` fires after a
+  // successful save so the wizard can advance; `onSkip` advances without
+  // saving — either may be omitted independently.
+  onSaved,
+  onSkip,
 }: {
   initial: { telegramChatId: string | null; telegramApproverIds: string[] };
   treasuryId: string;
+  onSaved?: () => void;
+  onSkip?: () => void;
 }) {
+  const embedded = onSaved !== undefined || onSkip !== undefined;
   const { getAccessToken } = usePrivy();
 
   // Same dual-state pattern as PolicyForm: `state` is what the user sees
@@ -144,6 +154,10 @@ export function TelegramConfigForm({
       // trust our submitted shape until next page load.
       setBaseline(state);
       setSavedAt(Date.now());
+      // Wizard hook — let the parent advance to the next step. Fires
+      // AFTER the baseline snap so a quick "Saved" pulse is still
+      // visible before the unmount.
+      onSaved?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -182,27 +196,55 @@ export function TelegramConfigForm({
         />
       </Section>
 
-      <div className="sticky bottom-4 z-10 flex items-center justify-between gap-3 rounded-lg border bg-card/95 p-3 shadow-sm backdrop-blur supports-backdrop-filter:bg-card/80">
-        <p className="text-muted-foreground text-xs">
-          {dirty ? <span className="text-foreground">Unsaved changes</span> : 'Saved'}
-        </p>
-        <div className="flex items-center gap-3">
-          {savedAt && !error && (
-            <span className="flex items-center gap-1 text-emerald-600 text-xs dark:text-emerald-400">
-              <CheckCircle2Icon className="size-3.5" aria-hidden /> Saved
-            </span>
-          )}
+      {embedded ? (
+        // Wizard footer: "Skip" + "Save & continue". No sticky positioning
+        // (the wizard owns layout) and no "Unsaved changes" copy because
+        // there's no baseline to compare against from the user's POV — the
+        // wizard's progress indicator is the affordance.
+        <div className="flex items-center justify-end gap-3">
           {error && (
             <span className="max-w-[20rem] truncate text-destructive text-xs" title={error}>
               {error}
             </span>
           )}
-          <Button type="submit" disabled={!dirty || saving || blocking} className="gap-1.5">
+          {onSkip && (
+            <Button type="button" variant="outline" onClick={onSkip} disabled={saving}>
+              Skip — auto-approve only
+            </Button>
+          )}
+          <Button
+            type="submit"
+            disabled={saving || blocking || !dirty}
+            className="gap-1.5"
+            title={!dirty ? 'Fill chat id and approver ids to continue, or click Skip.' : undefined}
+          >
             {saving && <Loader2Icon className="size-4 animate-spin" aria-hidden />}
-            {saving ? 'Saving' : 'Save changes'}
+            {saving ? 'Saving' : 'Save & continue'}
           </Button>
         </div>
-      </div>
+      ) : (
+        <div className="sticky bottom-4 z-10 flex items-center justify-between gap-3 rounded-lg border bg-card/95 p-3 shadow-sm backdrop-blur supports-backdrop-filter:bg-card/80">
+          <p className="text-muted-foreground text-xs">
+            {dirty ? <span className="text-foreground">Unsaved changes</span> : 'Saved'}
+          </p>
+          <div className="flex items-center gap-3">
+            {savedAt && !error && (
+              <span className="flex items-center gap-1 text-emerald-600 text-xs dark:text-emerald-400">
+                <CheckCircle2Icon className="size-3.5" aria-hidden /> Saved
+              </span>
+            )}
+            {error && (
+              <span className="max-w-[20rem] truncate text-destructive text-xs" title={error}>
+                {error}
+              </span>
+            )}
+            <Button type="submit" disabled={!dirty || saving || blocking} className="gap-1.5">
+              {saving && <Loader2Icon className="size-4 animate-spin" aria-hidden />}
+              {saving ? 'Saving' : 'Save changes'}
+            </Button>
+          </div>
+        </div>
+      )}
     </form>
   );
 }
@@ -245,7 +287,7 @@ function ChatIdField({
       <Input
         id={id}
         type="text"
-        placeholder="e.g. -1001234567890"
+        placeholder="e.g. -1001234567890…"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         className={cn(error && 'border-destructive focus-visible:ring-destructive')}

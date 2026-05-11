@@ -1,6 +1,6 @@
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { Db, DbOrTx } from '../client';
-import { type UserRow, users } from '../schema';
+import { type UserRow, auditLogs, users } from '../schema';
 
 export interface BootstrapUserInput {
   privyDid: string;
@@ -65,4 +65,52 @@ export async function getUserByPrivyDid(db: Db, privyDid: string): Promise<UserR
 export async function getUserById(db: Db, id: string): Promise<UserRow | null> {
   const row = await db.query.users.findFirst({ where: eq(users.id, id) });
   return row ?? null;
+}
+
+export class InvalidOnboardingStep extends Error {
+  constructor(step: number) {
+    super(`onboarding_step must be in 1..5, got ${step}`);
+    this.name = 'InvalidOnboardingStep';
+  }
+}
+
+// Idempotent UPDATE. Marks where the user paused so refresh / cross-tab
+// resume lands at the right step. No-op once `onboarded_at` is set —
+// onboarded users should never be bounced back into the wizard.
+export async function markUserOnboardingStep(
+  db: DbOrTx,
+  userId: string,
+  step: number,
+): Promise<void> {
+  if (!Number.isInteger(step) || step < 1 || step > 5) {
+    throw new InvalidOnboardingStep(step);
+  }
+  await db
+    .update(users)
+    .set({ onboardingStep: step })
+    .where(and(eq(users.id, userId), isNull(users.onboardedAt)));
+}
+
+// Marks the user fully onboarded. Sets onboarded_at = NOW(), clears
+// onboarding_step so a future schema audit can't see stale data, and
+// writes an audit_logs row so a future history page can surface "user
+// finished onboarding". Idempotent on repeat calls (no-op when
+// onboarded_at is already set).
+export async function markUserOnboarded(db: Db, userId: string): Promise<void> {
+  await db.transaction(async (tx) => {
+    const [updated] = await tx
+      .update(users)
+      .set({ onboardedAt: sql`NOW()`, onboardingStep: null })
+      .where(and(eq(users.id, userId), isNull(users.onboardedAt)))
+      .returning({ id: users.id, privyDid: users.privyDid });
+    if (!updated) return; // Already onboarded — idempotent no-op.
+    await tx.insert(auditLogs).values({
+      kind: 'user_onboarded',
+      // No treasuryId on this kind — onboarding is user-scoped, not
+      // treasury-scoped. Schema allows null treasury_id on audit_logs.
+      treasuryId: null,
+      actor: updated.privyDid,
+      payload: { userId: updated.id },
+    });
+  });
 }

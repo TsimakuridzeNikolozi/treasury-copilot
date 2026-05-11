@@ -225,7 +225,7 @@ export function PolicyForm({
                     className={cn(
                       'inline-flex h-9 items-center gap-2 rounded-full border px-3.5 font-medium text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
                       active
-                        ? 'border-foreground bg-foreground text-background hover:bg-foreground/90'
+                        ? 'border-primary bg-primary text-primary-foreground hover:bg-primary/90'
                         : 'border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground',
                     )}
                   >
@@ -233,7 +233,7 @@ export function PolicyForm({
                       aria-hidden
                       className={cn(
                         'size-1.5 rounded-full',
-                        active ? 'bg-background' : 'bg-muted-foreground/40',
+                        active ? 'bg-primary-foreground' : 'bg-muted-foreground/40',
                       )}
                     />
                     {v}

@@ -97,6 +97,29 @@ Pre-PR-3 in-flight rows (`status=executing` at deploy time) execute correctly un
 
 PR 4 dropped `TREASURY_PUBKEY_BASE58` (already dead — chat reads `resolved.treasury.walletAddress`) and `SEED_TREASURY_ID` (replaced by runtime lookup on `signer_backend = 'local'`) from the web env. After pulling, you can delete both from `apps/web/.env.local` — the seed script still reads `TREASURY_PUBKEY_BASE58` from `process.env` directly to mint the seed row, so keep it set there until you've run `pnpm db:seed-m2` once.
 
+### M2 PR 5 — brand identity + onboarding wizard
+
+PR 5 ships a real brand (palette + typography in `brand.md` at the repo root) and a multi-step onboarding wizard at `/onboarding`. After pulling:
+
+```bash
+pnpm install                # qrcode-svg + @types/qrcode-svg added
+pnpm db:migrate             # applies 0008 — adds users.onboarded_at + users.onboarding_step
+                            # The migration is safe to run inline (UPDATE inside the
+                            # migrator's wrapping transaction) because both columns
+                            # stay nullable. PR 1's NOT NULL flips needed a separate
+                            # seed-script stage; this trap doesn't apply here.
+```
+
+The 0008 migration backfills `onboarded_at = NOW()` on every existing user — pre-PR-5 accounts skip the wizard entirely.
+
+**Routing changes.** `/` is now a server component (was client + auto-bootstrap). Auto-bootstrap on sign-in is removed; the wizard's step 1 "Get started" CTA owns the `/api/me/bootstrap` call now. `bootstrapAuthAndTreasury` (`apps/web/src/lib/server-page-auth.ts:25`) redirects `onboardingRequired` to `/onboarding` (was `/`) — fixes a redirect loop the previous wiring would have introduced. `/onboarding` uses a new `requireAuthOnly` helper that returns `userId` without resolving treasury.
+
+**Server-side step derivation.** Single source of truth is `users.onboarding_step` (smallint nullable, 1-5) — no inference from `policies` / `telegram` / RPC balance. `users.onboarded_at` non-null gates the user out of `/onboarding` and into `/chat`. Each "Continue" / "Skip" CTA POSTs `/api/me/onboarding-step` BEFORE advancing locally so refresh / cross-tab resume lands at the right step. POST is best-effort — failure surfaces a toast and the wizard advances anyway. The final "Open chat" CTA awaits `/api/me/onboarded` (sets `onboarded_at = NOW()`, writes `audit_logs.kind = 'user_onboarded'`) — failure shows inline retry, not a silent redirect (a stale `onboarded_at = null` would just bounce the user right back).
+
+**Funding-step balance polling.** `GET /api/treasury/balance?treasuryId=…` returns `{ amountUsdc: string }`. Module-scoped Solana `Connection` (mirrors `apps/web/src/app/api/chat/route.ts:21`) and a per-treasury 3s TTL `Map` cache so concurrent tabs / repeated polls coalesce to one RPC per window. Client poll is 5s base, 30s after a 429/5xx, 60s after 3 consecutive errors. Effect cleanup on unmount + step change.
+
+**`brand.md`** at the repo root documents the **Inference** palette (cyan, minimal · technical) + **Manrope + JetBrains Mono** typography. `apps/web/src/app/globals.css.bak` keeps the pre-PR-5 stock shadcn neutrals if a rollback is needed. Future `frontend-design-guidelines` runs read `brand.md` automatically.
+
 ## Architecture
 
 ### The trust boundary (security-critical)
@@ -221,7 +244,7 @@ Biome only. **Do not add ESLint or Prettier.** Run `pnpm exec biome check --writ
 
 These are first-feature work, not setup. When asked to "add X", check this list — if it's here, the answer is "yes, that's phase-1 work, not a config tweak":
 
-- Onboarding wizard (welcome + try-asking primer, fund-wallet step with manual CTA + balance polling, set-guardrails step, Telegram setup) gated by `users.onboarded_at` and middleware-redirected from `/chat` and `/settings` — **PR 5**. Existing users backfilled to `onboarded_at = NOW()` so they're not bounced back through it.
+- Per-step deep links (`/onboarding/welcome`, `/onboarding/fund`, …) — single URL with state derivation chosen instead. Restart-onboarding affordance ("run me through the wizard again") deferred — **M3**.
 - Multi-user-per-treasury, invitations, role expansion beyond `owner`, treasury rename / delete UX, Privy webhook for user-deleted lifecycle, automatic reconciler for stage-3 bootstrap failure, bootstrap rate limiting (Upstash/Redis-backed) — **M3**.
 - Protocol SDK coverage in `packages/protocols`: Kamino and Save are wired end-to-end (deposit + withdraw); Drift and Marginfi builders are still stubs
 - CI workflows (`.github/workflows/`)

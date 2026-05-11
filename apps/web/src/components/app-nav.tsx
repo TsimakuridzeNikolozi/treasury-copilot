@@ -57,7 +57,7 @@ export function AppNav({ activeTreasuryId }: AppNavProps = {}) {
           >
             <span
               aria-hidden
-              className="flex size-7 items-center justify-center rounded-md bg-foreground text-background"
+              className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground"
             >
               <CoinsIcon className="size-4" />
             </span>
@@ -99,7 +99,7 @@ export function AppNav({ activeTreasuryId }: AppNavProps = {}) {
             >
               <span
                 aria-hidden
-                className="flex size-5 items-center justify-center rounded-full bg-foreground font-medium text-[10px] text-background"
+                className="flex size-5 items-center justify-center rounded-full bg-primary font-medium text-[10px] text-primary-foreground"
               >
                 {initial}
               </span>
