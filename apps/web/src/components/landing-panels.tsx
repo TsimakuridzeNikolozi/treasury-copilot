@@ -4,8 +4,8 @@ import { Button } from '@/components/ui/button';
 import { useLogin, usePrivy } from '@privy-io/react-auth';
 import { ArrowRightIcon, CoinsIcon, ShieldCheckIcon, SparklesIcon } from 'lucide-react';
 import Link from 'next/link';
-import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { useEffect } from 'react';
 
 // Two client islands hosted on the otherwise-server-rendered "/" page.
 // `SignInPanel` triggers Privy's email OTP flow; `SignedInPanel` is the
