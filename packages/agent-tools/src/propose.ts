@@ -17,8 +17,16 @@ export interface ProposeContext {
   modelProvider: string;
   // Injected so tests can stub without RPC; production callers get one from buildTools.
   balanceReader: BalanceReader;
-  // Pre-approved recipients (address book, M4-2). Omit until M4-2 lands.
+  // Pre-approved recipients (address book, M4-2). Bypasses the human
+  // approval gate for transfers above requireApprovalAboveUsdc.
   preApprovedRecipients?: ReadonlySet<string>;
+  // Every recipient in the treasury's address book (a superset of
+  // preApprovedRecipients). Drives the requireAddressBookForTransfers
+  // safety gate in @tc/policy.evaluate — when the gate is on (default),
+  // transfers to addresses NOT in this set deny outright. Omit and the
+  // policy engine treats the book as empty (fail-closed: every transfer
+  // denies when the gate is on).
+  addressBookRecipients?: ReadonlySet<string>;
 }
 
 export interface ProposeActionResult {
@@ -79,14 +87,22 @@ export async function proposeAction(
   const recentAutoApprovedUsdc = await sumAutoApprovedSince(db, action.treasuryId, since);
   const effectivePolicy = policy ?? (await getPolicy(db, action.treasuryId));
 
-  // Forward preApprovedRecipients so the bypass in evaluate() is reachable
-  // once M4-2 populates the set; without this, chat transfers always escalate.
+  // Forward both M4-2 sets into the policy engine:
+  //   - preApprovedRecipients gates the approval-bypass above
+  //     requireApprovalAboveUsdc.
+  //   - addressBookRecipients gates the requireAddressBookForTransfers
+  //     deny (denies transfers to unknown addresses when on).
+  // Both use the spread pattern so undefined fields are omitted, not
+  // explicit `undefined` (exactOptionalPropertyTypes).
   let decision = evaluate(
     action,
     {
       recentAutoApprovedUsdc,
       ...(ctx.preApprovedRecipients !== undefined && {
         preApprovedRecipients: ctx.preApprovedRecipients,
+      }),
+      ...(ctx.addressBookRecipients !== undefined && {
+        addressBookRecipients: ctx.addressBookRecipients,
       }),
     },
     effectivePolicy,

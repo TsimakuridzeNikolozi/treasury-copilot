@@ -114,6 +114,16 @@ describe('policy.evaluate — transfer kind (M4 PR 1)', () => {
   const RECIPIENT_B = 'GokivDYuQXPZCWRkwMhdH2h91KpDQXBEmKgBjFvKMHJq';
   const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
+  // M4 PR 2: DEFAULT_POLICY now ships with
+  // requireAddressBookForTransfers=true, so every transfer test that
+  // isn't specifically exercising the gate needs the recipient in the
+  // book. TRANSFER_FRESH bundles this — keeps each test focused on the
+  // policy gate it actually cares about (cap, threshold, velocity).
+  const TRANSFER_FRESH: EvaluateContext = {
+    recentAutoApprovedUsdc: '0',
+    addressBookRecipients: new Set([RECIPIENT, RECIPIENT_B]),
+  };
+
   const transfer = (
     amountUsdc: string,
     overrides: Partial<{ recipient: string; mint: string }> = {},
@@ -127,7 +137,7 @@ describe('policy.evaluate — transfer kind (M4 PR 1)', () => {
   });
 
   it('allows below the threshold (small transfer auto-approves)', () => {
-    const decision = evaluate(transfer('500'), FRESH);
+    const decision = evaluate(transfer('500'), TRANSFER_FRESH);
     expect(decision.kind).toBe('allow');
     if (decision.kind === 'allow') {
       expect(decision.action.kind).toBe('transfer');
@@ -136,13 +146,13 @@ describe('policy.evaluate — transfer kind (M4 PR 1)', () => {
 
   it('requires approval above threshold when recipient is NOT pre-approved', () => {
     // default policy: requireApprovalAboveUsdc=1000, maxSingleTransferUsdc=10000.
-    const decision = evaluate(transfer('5000'), FRESH);
+    const decision = evaluate(transfer('5000'), TRANSFER_FRESH);
     expect(decision.kind).toBe('requires_approval');
   });
 
   it('bypasses approval when recipient IS pre-approved (still subject to velocity)', () => {
     const ctx: EvaluateContext = {
-      recentAutoApprovedUsdc: '0',
+      ...TRANSFER_FRESH,
       preApprovedRecipients: new Set([RECIPIENT]),
     };
     const decision = evaluate(transfer('5000'), ctx);
@@ -154,7 +164,7 @@ describe('policy.evaluate — transfer kind (M4 PR 1)', () => {
     // The transfer should still require approval — the bypass must be
     // keyed on the exact recipient.
     const ctx: EvaluateContext = {
-      recentAutoApprovedUsdc: '0',
+      ...TRANSFER_FRESH,
       preApprovedRecipients: new Set([RECIPIENT_B]),
     };
     const decision = evaluate(transfer('5000'), ctx);
@@ -165,6 +175,7 @@ describe('policy.evaluate — transfer kind (M4 PR 1)', () => {
     // recent 4500 + action 5000 = 9500 > 5000 cap → escalate, even with
     // pre-approval. The bypass is for the human gate, not the budget gate.
     const ctx: EvaluateContext = {
+      ...TRANSFER_FRESH,
       recentAutoApprovedUsdc: '4500',
       preApprovedRecipients: new Set([RECIPIENT]),
     };
@@ -177,7 +188,7 @@ describe('policy.evaluate — transfer kind (M4 PR 1)', () => {
 
   it('denies above maxSingleTransferUsdc (separate cap from maxSingleActionUsdc)', () => {
     // Default maxSingleTransferUsdc = 10000; 10000.000001 trips the cap.
-    const decision = evaluate(transfer('10000.000001'), FRESH);
+    const decision = evaluate(transfer('10000.000001'), TRANSFER_FRESH);
     expect(decision.kind).toBe('deny');
     if (decision.kind === 'deny') {
       expect(decision.reason).toContain('maxSingleTransferUsdc');
@@ -197,7 +208,7 @@ describe('policy.evaluate — transfer kind (M4 PR 1)', () => {
       maxAutoApprovedUsdcPer24h: '1000000',
     };
     const ctx: EvaluateContext = {
-      recentAutoApprovedUsdc: '0',
+      ...TRANSFER_FRESH,
       preApprovedRecipients: new Set([RECIPIENT]),
     };
     const decision = evaluate(transfer('50000'), ctx, policy);
@@ -220,7 +231,85 @@ describe('policy.evaluate — transfer kind (M4 PR 1)', () => {
   });
 
   it('denies non-positive transfer amounts', () => {
-    expect(evaluate(transfer('0'), FRESH).kind).toBe('deny');
+    expect(evaluate(transfer('0'), TRANSFER_FRESH).kind).toBe('deny');
+  });
+});
+
+describe('policy.evaluate — requireAddressBookForTransfers gate (M4 PR 2)', () => {
+  const KNOWN = '9xQeWvG816bUx9EPa1xCkYJyXmcAfg7vRfBxbCw5N3rN';
+  const UNKNOWN = 'GokivDYuQXPZCWRkwMhdH2h91KpDQXBEmKgBjFvKMHJq';
+  const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+  const transfer = (recipient: string, amountUsdc = '500'): ProposedAction => ({
+    kind: 'transfer',
+    treasuryId: TREASURY_ID,
+    sourceWallet: SOURCE,
+    recipientAddress: recipient,
+    tokenMint: USDC_MINT,
+    amountUsdc,
+  });
+
+  it('denies a transfer to an address NOT in the address book (default policy)', () => {
+    // DEFAULT_POLICY ships with requireAddressBookForTransfers=true.
+    // UNKNOWN is not in the book → hard deny, regardless of amount.
+    const ctx: EvaluateContext = {
+      recentAutoApprovedUsdc: '0',
+      addressBookRecipients: new Set([KNOWN]),
+    };
+    const decision = evaluate(transfer(UNKNOWN, '10'), ctx);
+    expect(decision.kind).toBe('deny');
+    if (decision.kind === 'deny') {
+      expect(decision.reason).toContain('address book');
+    }
+  });
+
+  it('denies fail-closed when addressBookRecipients is omitted (empty book)', () => {
+    // Defense in depth: callers that don't pass the set get the most
+    // conservative behavior. The chat route always passes it; this guard
+    // is for any future caller that forgets.
+    const decision = evaluate(transfer(KNOWN, '10'), { recentAutoApprovedUsdc: '0' });
+    expect(decision.kind).toBe('deny');
+  });
+
+  it('allows a transfer when the recipient IS in the address book', () => {
+    const ctx: EvaluateContext = {
+      recentAutoApprovedUsdc: '0',
+      addressBookRecipients: new Set([KNOWN]),
+    };
+    const decision = evaluate(transfer(KNOWN, '10'), ctx);
+    expect(decision.kind).toBe('allow');
+  });
+
+  it('allows any-address transfer when the policy flag is OFF (opt-out)', () => {
+    const policy: Policy = { ...DEFAULT_POLICY, requireAddressBookForTransfers: false };
+    // No addressBookRecipients in context — and an unknown recipient —
+    // still allowed because the gate is off.
+    const decision = evaluate(transfer(UNKNOWN, '10'), { recentAutoApprovedUsdc: '0' }, policy);
+    expect(decision.kind).toBe('allow');
+  });
+
+  it('does NOT gate deposits/withdraws/rebalances (transfer-only)', () => {
+    // A deposit to a valid venue with no addressBookRecipients in the
+    // context must still allow — the gate is scoped to kind='transfer'.
+    const decision = evaluate(deposit('500'), { recentAutoApprovedUsdc: '0' });
+    expect(decision.kind).toBe('allow');
+  });
+
+  it('gate fires before the amount cap (most-actionable deny first)', () => {
+    // 999999 is over every cap, but the address-book deny is reported
+    // first so the user adds the recipient (the actionable fix) rather
+    // than learning about a cap violation that would also block a
+    // legitimate add-then-resend.
+    const ctx: EvaluateContext = {
+      recentAutoApprovedUsdc: '0',
+      addressBookRecipients: new Set([KNOWN]),
+    };
+    const decision = evaluate(transfer(UNKNOWN, '999999'), ctx);
+    expect(decision.kind).toBe('deny');
+    if (decision.kind === 'deny') {
+      expect(decision.reason).toContain('address book');
+      expect(decision.reason).not.toContain('maxSingleTransferUsdc');
+    }
   });
 });
 

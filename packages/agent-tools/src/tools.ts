@@ -1,5 +1,10 @@
 import type { Connection, PublicKey } from '@solana/web3.js';
-import { type Db, ensureSubscriptionsForTreasury, listSubscriptions } from '@tc/db';
+import {
+  type Db,
+  ensureSubscriptionsForTreasury,
+  listAddressBookEntries,
+  listSubscriptions,
+} from '@tc/db';
 import { getJupiterUsdcPosition, getJupiterUsdcSupplyApy } from '@tc/protocols/jupiter';
 import { getKaminoUsdcPosition, getKaminoUsdcSupplyApy } from '@tc/protocols/kamino';
 import { getSaveUsdcPosition, getSaveUsdcSupplyApy } from '@tc/protocols/save';
@@ -65,6 +70,19 @@ export interface ToolContext {
   // Threaded into every proposed action so per-treasury policy + velocity
   // cap apply correctly. The AI never sees or sets this.
   treasuryId: string;
+  // M4 PR 2: address-book-derived set of recipient addresses that bypass
+  // the approval gate for transfers above `requireApprovalAboveUsdc`.
+  // The velocity cap still applies. The chat route fetches this set
+  // per-request (cheap — single SELECT scoped to the treasury) and
+  // passes it through; tests can omit it (empty set is the same effect
+  // as no pre-approvals).
+  preApprovedRecipients?: ReadonlySet<string>;
+  // M4 PR 2: every address-book recipient (superset of
+  // preApprovedRecipients). Drives the requireAddressBookForTransfers
+  // safety gate — transfers to addresses NOT in this set DENY when the
+  // policy flag is on (default). The chat route fetches this alongside
+  // preApprovedRecipients per request.
+  addressBookRecipients?: ReadonlySet<string>;
 }
 
 // Per-request factory: `db` and `ctx` are baked into each tool's execute closure
@@ -74,10 +92,21 @@ export interface ToolContext {
 export function buildTools(db: Db, ctx: ToolContext) {
   const treasuryBase58 = ctx.treasuryAddress.toBase58();
   const balanceReader = createRpcBalanceReader(ctx.connection, ctx.treasuryAddress);
+  // Spread-thread the two M4-2 sets so undefined fields are omitted,
+  // not explicit `undefined` — required by exactOptionalPropertyTypes.
+  // proposeAction forwards both into EvaluateContext:
+  //   preApprovedRecipients  → approval-bypass for over-threshold transfers
+  //   addressBookRecipients  → requireAddressBookForTransfers gate
   const proposeCtx: ProposeContext = {
     proposedBy: ctx.proposedBy,
     modelProvider: ctx.modelProvider,
     balanceReader,
+    ...(ctx.preApprovedRecipients !== undefined && {
+      preApprovedRecipients: ctx.preApprovedRecipients,
+    }),
+    ...(ctx.addressBookRecipients !== undefined && {
+      addressBookRecipients: ctx.addressBookRecipients,
+    }),
   };
   return {
     proposeDeposit: tool({
@@ -197,6 +226,30 @@ export function buildTools(db: Db, ctx: ToolContext) {
             supplyApy:
               jupiterApyResult.status === 'fulfilled' ? jupiterApyResult.value.apyDecimal : null,
           },
+        };
+      },
+    }),
+    getAddressBook: tool({
+      description:
+        "Read-only listing of the treasury's address book entries (named recipients for outbound USDC transfers). Call this when the user names a recipient by label (e.g. 'send 100 to Acme') — resolve the label to its base58 address from this list, then call proposeTransfer with that address. Also useful for 'who's in my address book?' / 'what addresses are pre-approved?' queries. Labels are CASE-SENSITIVE: 'Acme Corp' and 'acme corp' are different entries. When the user types a label in mixed case ('send 100 to acme'), search this list and use the canonical label's recipientAddress; if no entry matches case-insensitively, ask the user to clarify or to add the recipient first. Entries with preApproved=true skip the approval card for transfers above the treasury's requireApprovalAboveUsdc cap (the 24h velocity budget still applies). To ADD, EDIT, or REMOVE entries the user must visit /settings → Address book — this tool is read-only by design.",
+      inputSchema: z.object({}),
+      execute: async () => {
+        const rows = await listAddressBookEntries(db, ctx.treasuryId);
+        return {
+          treasuryId: ctx.treasuryId,
+          entries: rows.map((r) => ({
+            id: r.id,
+            label: r.label,
+            recipientAddress: r.recipientAddress,
+            tokenMint: r.tokenMint,
+            notes: r.notes,
+            preApproved: r.preApproved,
+            createdAt: r.createdAt.toISOString(),
+            // M4 PR 2 review #8 — surface updatedAt so the model can
+            // answer "when did I last change Acme?" without a separate
+            // tool. ISO string matches createdAt's shape.
+            updatedAt: r.updatedAt.toISOString(),
+          })),
         };
       },
     }),

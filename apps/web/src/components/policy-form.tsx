@@ -13,7 +13,7 @@ import { cn } from '@/lib/utils';
 import { usePrivy } from '@privy-io/react-auth';
 import type { Policy } from '@tc/policy';
 import type { Venue } from '@tc/types';
-import { CheckCircle2Icon, InfoIcon, Loader2Icon } from 'lucide-react';
+import { CheckCircle2Icon, InfoIcon, Loader2Icon, ShieldCheckIcon } from 'lucide-react';
 import { useEffect, useId, useMemo, useState } from 'react';
 
 const ENABLED_VENUES: readonly Venue[] = ['kamino', 'save', 'jupiter'];
@@ -29,6 +29,8 @@ interface FormState {
   maxSingleActionUsdc: string;
   maxAutoApprovedUsdcPer24h: string;
   allowedVenues: Venue[];
+  // M4 PR 2 — safety gate. Defaults true in DEFAULT_POLICY. UI toggle below.
+  requireAddressBookForTransfers: boolean;
 }
 
 function policyToState(p: Policy): FormState {
@@ -37,6 +39,7 @@ function policyToState(p: Policy): FormState {
     maxSingleActionUsdc: p.maxSingleActionUsdc,
     maxAutoApprovedUsdcPer24h: p.maxAutoApprovedUsdcPer24h,
     allowedVenues: [...p.allowedVenues],
+    requireAddressBookForTransfers: p.requireAddressBookForTransfers,
   };
 }
 
@@ -85,7 +88,8 @@ export function PolicyForm({
       state.requireApprovalAboveUsdc !== baseline.requireApprovalAboveUsdc ||
       state.maxSingleActionUsdc !== baseline.maxSingleActionUsdc ||
       state.maxAutoApprovedUsdcPer24h !== baseline.maxAutoApprovedUsdcPer24h ||
-      !venuesEqual(state.allowedVenues, baseline.allowedVenues),
+      !venuesEqual(state.allowedVenues, baseline.allowedVenues) ||
+      state.requireAddressBookForTransfers !== baseline.requireAddressBookForTransfers,
     [state, baseline],
   );
 
@@ -139,6 +143,7 @@ export function PolicyForm({
           maxSingleActionUsdc: state.maxSingleActionUsdc,
           maxAutoApprovedUsdcPer24h: state.maxAutoApprovedUsdcPer24h,
           allowedVenues: state.allowedVenues,
+          requireAddressBookForTransfers: state.requireAddressBookForTransfers,
           treasuryId,
         }),
       });
@@ -205,6 +210,16 @@ export function PolicyForm({
             hint="Cumulative cap on auto-approved actions in any rolling 24-hour window."
             value={state.maxAutoApprovedUsdcPer24h}
             onChange={(v) => setField('maxAutoApprovedUsdcPer24h', v)}
+          />
+        </Section>
+
+        <Section
+          title="Transfer safety"
+          description="Controls how strict the policy engine is about outbound transfers (kind=transfer). Yield moves (deposit/withdraw/rebalance) are unaffected."
+        >
+          <AddressBookGateToggle
+            checked={state.requireAddressBookForTransfers}
+            onChange={(v) => setState((cur) => ({ ...cur, requireAddressBookForTransfers: v }))}
           />
         </Section>
 
@@ -369,6 +384,64 @@ function UsdcField({
           {error}
         </p>
       )}
+    </div>
+  );
+}
+
+// M4 PR 2 — toggle for the requireAddressBookForTransfers safety gate.
+// Visual language mirrors AlertSubscriptionsForm's ToggleSwitch (no
+// dependency on @radix-ui/react-switch), with an inline explainer that
+// names the bypass (turning it OFF restores the previous "send to any
+// base58" workflow). Default checked=true matches DEFAULT_POLICY.
+function AddressBookGateToggle({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  const id = useId();
+  return (
+    <div className="flex items-start gap-3 rounded-md border bg-muted/30 p-3">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-labelledby={`${id}-label`}
+        aria-describedby={`${id}-help`}
+        onClick={() => onChange(!checked)}
+        className={cn(
+          'mt-0.5 inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border transition-colors',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+          checked ? 'border-primary bg-primary' : 'border-border bg-muted hover:bg-muted/80',
+        )}
+      >
+        <span
+          aria-hidden
+          className={cn(
+            'pointer-events-none block size-4 rounded-full bg-background shadow-sm transition-transform',
+            checked ? 'translate-x-4' : 'translate-x-0.5',
+          )}
+        />
+      </button>
+      <div className="flex flex-col gap-1">
+        <span id={`${id}-label`} className="flex items-center gap-1.5 font-medium text-sm">
+          <ShieldCheckIcon
+            className={cn(
+              'size-3.5',
+              checked ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground',
+            )}
+            aria-hidden
+          />
+          Require address book for transfers
+        </span>
+        <p id={`${id}-help`} className="text-muted-foreground text-xs">
+          When on, transfers to recipients NOT in your address book are denied. The chat agent has
+          no write access to the address book, so a prompt-injection attempt cannot wire to a new
+          address. Turn off only if you regularly send to one-off addresses; the standard approval
+          and velocity caps still apply.
+        </p>
+      </div>
     </div>
   );
 }

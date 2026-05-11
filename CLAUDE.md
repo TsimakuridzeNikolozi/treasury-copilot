@@ -287,6 +287,60 @@ VALUES (
 
 The executor's existing single-tx path handles this without changes (the `kind === 'rebalance'` recovery branch is a no-op for transfer rows). On success the row transitions `approved → executing → executed` with `tx_signature` populated.
 
+### M4 PR 2 — address book + transfer safety gate
+
+PR 2 ships the per-treasury address book PLUS a default-on safety gate that denies transfers to addresses not in it. After pulling:
+
+```bash
+pnpm db:migrate         # applies 0014 + 0015:
+                        #   0014 — creates address_book_entries
+                        #          (treasury_id, label, recipient_address,
+                        #           token_mint default USDC, notes,
+                        #           pre_approved, created_by, created_at,
+                        #           updated_at) with two unique indexes:
+                        #             (treasury_id, recipient_address)
+                        #             (treasury_id, label)
+                        #          No backfill — table starts empty.
+                        #   0015 — ADDS policies.require_address_book_for_transfers
+                        #          boolean NOT NULL DEFAULT true. Existing
+                        #          rows backfill to true in-place (no rewrite).
+                        # No env changes.
+```
+
+**The safety gate (default ON).** `requireAddressBookForTransfers` (on `policies`) denies any `transfer` action whose recipient is not in the treasury's address book. Default is TRUE for new and existing rows. Operators who want the previous "send to any base58" workflow flip the toggle off in `/settings → Policy → Transfer safety`. The gate is transfer-only — deposits, withdrawals, and rebalances are unaffected.
+
+**Why this matters.** The chat agent has NO write tool for the address book (deliberate prompt-injection guard). With the gate on, an injected prompt that gets the model to call `proposeTransfer` against an attacker-controlled address cannot succeed — the policy engine denies it before the signer sees the action. Today the worst-case prompt-injection exfiltration window is `maxAutoApprovedUsdcPer24h` (default $5k/24h to any address); with the gate on, that drops to **$0** for never-added recipients. The gate fires before the amount-cap checks in `evaluate`, so the deny reason is always the most actionable one ("add the recipient first") even when the amount would have failed multiple gates.
+
+**Pre-approval contract.** A recipient with `pre_approved = true` bypasses the approval card for transfers ABOVE `policies.require_approval_above_usdc` only. The 24h velocity cap (`max_auto_approved_usdc_per_24h`) still applies, AND the hard transfer ceiling (`max_single_transfer_usdc`) still applies. Pre-approval is recipient-scoped — adding Acme does not let you wire to Bob. Under-threshold transfers do not need (and do not check) pre-approval; the bypass only matters when the dollar amount would otherwise pop the approval gate. Pre-approval is a strict subset of address-book membership: every pre-approved recipient is in the book, so when the safety gate is on (default) you don't have to pick between the two — `pre_approved=true` implies "in book".
+
+**New DB queries.** `packages/db/src/queries/address-book.ts` exports the full CRUD surface (`insertAddressBookEntry`, `updateAddressBookEntry`, `deleteAddressBookEntry`, `listAddressBookEntries`, `getAddressBookEntryById`, `getAddressBookEntryByAddress`, `getAddressBookEntryByLabel`) plus two recipient-set helpers: `getAddressBookRecipientSet(db, treasuryId)` (every entry — drives the safety gate) and `getPreApprovedRecipientSet(db, treasuryId)` (subset with `pre_approved=true` — drives the approval-bypass). Every mutation wraps the row write + an `audit_logs` row (`address_book_entry_added | _updated | _removed`) in a transaction so history and state always agree. Unique-violation errors (duplicate label or duplicate address) are typed via `isAddressBookLabelConflict` / `isAddressBookAddressConflict` so the route layer can return precise 409s.
+
+**Trust-boundary wiring.**
+- `apps/web/src/app/api/chat/route.ts` — calls `getAddressBookRecipientSet` AND `getPreApprovedRecipientSet` per chat request (two SELECTs in parallel) and passes both into `buildTools` via `ToolContext.addressBookRecipients` + `ToolContext.preApprovedRecipients`. Each `proposeAction` call in that turn sees a consistent snapshot.
+- `@tc/agent-tools` — `ToolContext` + `ProposeContext` both carry the two optional `ReadonlySet<string>` fields, spread-threaded into `EvaluateContext` (exactOptionalPropertyTypes). The propose-layer seam is regression-tested in `propose.test.ts` for both gates.
+- `@tc/policy` — `EvaluateContext.addressBookRecipients` is the new field. `evaluate` checks the gate for `kind='transfer'` AFTER the amount-positive check but BEFORE the amount-cap check (so a recipient mistake yields the most-actionable deny reason). Fail-closed: missing `addressBookRecipients` under the default-on policy denies every transfer.
+
+**New web routes + UI.**
+- `GET /api/treasury/address-book` — lists entries for the active treasury, ISO-string timestamps.
+- `POST /api/treasury/address-book` — create. Validates label (1–64 chars, trimmed), recipient address (base58 32–44), notes (≤500 chars), preApproved boolean. Body-vs-cookie 409 + owner-only RBAC + the two structured 409s (`duplicate_label`, `duplicate_address`) for the unique-index violations.
+- `PATCH /api/treasury/address-book/[id]` — edit label / notes / preApproved. `recipient_address` is intentionally immutable post-create; a new address is a new entry.
+- `DELETE /api/treasury/address-book/[id]` — remove. The (id, treasuryId) WHERE clause inside the query refuses cross-treasury deletes even if a client knew another treasury's entry id.
+- `/settings → Address book` section. `AddressBookTable` is a single-component CRUD list with inline add form, per-row edit/delete, live validation, structured 409 handling. The pre-approve toggle includes inline copy explaining the bypass contract so users don't have to read CLAUDE.md to understand what it does.
+
+**New AI tool.**
+- `getAddressBook()` — read-only listing of the active treasury's entries. The chat system prompt now tells the model to ALWAYS call `getAddressBook` before proposing a transfer (under the default-on gate, transfers to unknown recipients deny — the model needs the book to know what's allowed). For label resolution ("send 100 to Acme") the model uses the same listing. No write tool by design — the AI cannot edit the address book (the model could otherwise be coerced into adding a malicious recipient via prompt injection, which is the exact attack the safety gate defends against). Users edit at `/settings → Address book`.
+
+**Telegram card label resolution.** `apps/worker/src/bot.ts` looks up the recipient's address-book label at post time (in `postApprovalCard`) and again at edit time (in `editApprovalCardWithExecution` and the callback handler's resolved-state edit). The label is NOT snapshotted onto the action payload — the lookup is by address against current state, so a rename between post and execute surfaces the latest. Lookup failures fall back to the labeless card; the address-book read is a UX nicety, not a correctness boundary.
+
+**Verification — via chat.**
+1. `/settings → Address book` → add an entry "Acme Corp" with the base58 of an address you control + `Pre-approve` toggled ON.
+2. `/chat` → "what's in my address book?" — the agent calls `getAddressBook` and lists Acme.
+3. `/chat` → "send 0.5 USDC to <raw address NOT in your book>" — the agent should report that the policy denied the action ("recipient … is not in this treasury's address book"). This proves the safety gate.
+4. `/chat` → "send 25 USDC to Acme" — the agent resolves Acme via `getAddressBook` and calls `proposeTransfer`. Row lands `approved` (small amount, auto-approve), executor delivers.
+5. Bump `policies.require_approval_above_usdc` to $10 (`PATCH /api/policy`), or pick an amount above your current threshold. `/chat` → "send 1000 USDC to Acme" — STILL auto-approves because Acme is pre-approved.
+6. Edit Acme's entry to `pre_approved = false`, repeat step 5's "send 1000 to Acme" — now it escalates to `pending` (Telegram card). Confirms the bypass is gated on the latest pre-approval flag.
+7. `/settings → Policy → Transfer safety` → flip `Require address book for transfers` OFF. Repeat step 3 — now the same "send 0.5 to <raw address>" auto-approves. Flip it back ON when you're done.
+
 ## Architecture
 
 ### The trust boundary (security-critical)
