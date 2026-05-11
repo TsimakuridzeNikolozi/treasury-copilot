@@ -38,6 +38,13 @@ const baseEnv = z.object({
   APY_SNAPSHOT_INTERVAL_MS: z.coerce.number().int().positive().default(3_600_000),
   APY_SNAPSHOT_JITTER_MS: z.coerce.number().int().nonnegative().default(300_000),
 
+  // M3 PR 2 — yield-drift check cadence. 6h base + 30min jitter is the
+  // plan default: drift signals are slow-moving so anything faster just
+  // burns RPC budget, and the cooldown window in the subscription config
+  // (24h by default) prevents user-visible spam regardless.
+  YIELD_DRIFT_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(21_600_000),
+  YIELD_DRIFT_CHECK_JITTER_MS: z.coerce.number().int().nonnegative().default(1_800_000),
+
   SIGNER_COMMITMENT: z.enum(['processed', 'confirmed', 'finalized']).default('confirmed'),
   SIGNER_CONFIRM_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
   // Per-call signing timeout. Bounds the Turnkey API call separately from

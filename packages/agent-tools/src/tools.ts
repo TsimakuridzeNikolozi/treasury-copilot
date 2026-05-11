@@ -1,5 +1,5 @@
 import type { Connection, PublicKey } from '@solana/web3.js';
-import type { Db } from '@tc/db';
+import { type Db, ensureSubscriptionsForTreasury, listSubscriptions } from '@tc/db';
 import { getJupiterUsdcPosition, getJupiterUsdcSupplyApy } from '@tc/protocols/jupiter';
 import { getKaminoUsdcPosition, getKaminoUsdcSupplyApy } from '@tc/protocols/kamino';
 import { getSaveUsdcPosition, getSaveUsdcSupplyApy } from '@tc/protocols/save';
@@ -159,6 +159,25 @@ export function buildTools(db: Db, ctx: ToolContext) {
             supplyApy:
               jupiterApyResult.status === 'fulfilled' ? jupiterApyResult.value.apyDecimal : null,
           },
+        };
+      },
+    }),
+    getAlertConfig: tool({
+      description:
+        "Read-only listing of the user's proactive-alert subscriptions (yield_drift, idle_capital, anomaly, concentration, protocol_health). Call this when the user asks what alerts they have, whether something is enabled, or what their thresholds are. To CHANGE alert settings the user must visit /settings → Alerts (this tool cannot edit them — no write tool exists by design, alerts are sensitive config).",
+      inputSchema: z.object({}),
+      execute: async () => {
+        await ensureSubscriptionsForTreasury(db, ctx.treasuryId);
+        const rows = await listSubscriptions(db, ctx.treasuryId);
+        return {
+          treasuryId: ctx.treasuryId,
+          subscriptions: rows.map((r) => ({
+            kind: r.kind,
+            enabled: r.enabled,
+            config: r.config,
+            updatedAt: r.updatedAt ? r.updatedAt.toISOString() : null,
+            updatedBy: r.updatedBy ?? null,
+          })),
         };
       },
     }),

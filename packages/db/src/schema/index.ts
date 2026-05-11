@@ -2,6 +2,7 @@ import type { PolicyDecision, ProposedAction, Venue } from '@tc/types';
 import { relations, sql } from 'drizzle-orm';
 import {
   bigserial,
+  boolean,
   check,
   index,
   integer,
@@ -343,6 +344,54 @@ export const notifications = pgTable(
   ],
 );
 
+// M3 PR 2 — per-treasury per-alert-kind subscription. One row per
+// (treasury_id, kind) pair, seeded by the migration with `enabled=false`
+// and the M3 default config for every existing treasury. New treasuries
+// added after this migration get rows lazily — `getSubscription` returns
+// the seeded default when no row exists yet, and `upsertSubscription`
+// fills it on the first edit.
+//
+// `config` is a free-form jsonb so each alert kind owns its own schema
+// (yield_drift uses { minDriftBps, minOpportunityUsdcPerMonth, sustainHours,
+// cooldownHours }; idle_capital, concentration, etc. will add their own
+// shapes in M3-3..M3-5 + M5-1). The shapes live in code (defaults +
+// Zod-validated PATCH bodies) rather than in the DB so a future alert
+// kind doesn't need a migration.
+//
+// `kind` is CHECK-constrained at the DB layer so a stray write can't
+// plant a value the worker has no handler for. New kinds widen the
+// CHECK in a subsequent migration.
+export const alertSubscriptions = pgTable(
+  'alert_subscriptions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    // ON DELETE cascade: a deleted treasury takes its subscriptions with
+    // it. Subscriptions are configuration, not history (notifications
+    // table is the history) — mirror policies' cascade reasoning.
+    treasuryId: uuid('treasury_id')
+      .references(() => treasuries.id, { onDelete: 'cascade' })
+      .notNull(),
+    kind: text('kind').notNull(),
+    enabled: boolean('enabled').notNull().default(false),
+    config: jsonb('config').notNull().default(sql`'{}'::jsonb`),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+    // Privy DID of last editor; matches policies.updated_by shape.
+    updatedBy: text('updated_by'),
+  },
+  (t) => [
+    // One row per (treasury, kind). Forms upsert into this constraint.
+    uniqueIndex('alert_subscriptions_treasury_kind_uq').on(t.treasuryId, t.kind),
+    // M3 kinds currently shipping or planned: yield_drift (this PR),
+    // idle_capital (M3-3), anomaly (M3-5), concentration (M5-1),
+    // protocol_health (M5-2). Adding a new kind = widen this CHECK in
+    // a follow-up migration.
+    check(
+      'alert_subscriptions_kind_chk',
+      sql`${t.kind} IN ('yield_drift', 'idle_capital', 'anomaly', 'concentration', 'protocol_health')`,
+    ),
+  ],
+);
+
 // M3 PR 1 — cross-treasury, append-only APY time series. One row per
 // venue per collector tick (hourly, with jitter). Single shared table
 // rather than per-treasury because supply APY is a property of the venue,
@@ -452,6 +501,13 @@ export const notificationsRelations = relations(notifications, ({ one }) => ({
   }),
 }));
 
+export const alertSubscriptionsRelations = relations(alertSubscriptions, ({ one }) => ({
+  treasury: one(treasuries, {
+    fields: [alertSubscriptions.treasuryId],
+    references: [treasuries.id],
+  }),
+}));
+
 export type ProposedActionRow = typeof proposedActions.$inferSelect;
 export type NewProposedActionRow = typeof proposedActions.$inferInsert;
 export type ApprovalRow = typeof approvals.$inferSelect;
@@ -470,3 +526,5 @@ export type NotificationRow = typeof notifications.$inferSelect;
 export type NewNotificationRow = typeof notifications.$inferInsert;
 export type ApySnapshotRow = typeof apySnapshots.$inferSelect;
 export type NewApySnapshotRow = typeof apySnapshots.$inferInsert;
+export type AlertSubscriptionRow = typeof alertSubscriptions.$inferSelect;
+export type NewAlertSubscriptionRow = typeof alertSubscriptions.$inferInsert;

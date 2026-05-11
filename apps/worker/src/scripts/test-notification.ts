@@ -35,7 +35,13 @@ import { bot } from '../bot';
 import { db } from '../db';
 import { sendTelegramNotification } from '../notifications';
 
-const DEDUPE_KEY = `smoke_test:m3_pr_1:${Date.now()}`;
+// Load-bearing import side effect: forces apps/worker/src/env.ts to parse
+// the worker env at module load so the script fails fast on a missing
+// TELEGRAM_BOT_TOKEN. The reference below pins the import past biome's
+// unused-import sweep.
+void bot;
+
+const DEDUPE_KEY = 'smoke_test:m3_pr_1';
 const DEDUPE_WINDOW_MS = 60_000;
 
 function parseTreasuryArg(): string | null {
@@ -121,19 +127,14 @@ async function main(): Promise<void> {
 }
 
 main()
-  .then(async () => {
+  .then(() => {
     // bot is imported at module load (the Bot instance opens nothing until
     // bot.start() is called), but grammy keeps a reference that prevents
     // clean exit. Explicit process.exit lets the script terminate without
     // a hanging socket pool from postgres-js.
     process.exit(0);
   })
-  .catch(async (err) => {
+  .catch((err) => {
     console.error('[smoke] failed:', err);
     process.exit(1);
-  })
-  .finally(() => {
-    // Silence biome unused-import warning on `bot` while keeping the
-    // import — its module-load side effect (env validation) is the point.
-    void bot;
   });
