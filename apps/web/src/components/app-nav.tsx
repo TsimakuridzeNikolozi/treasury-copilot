@@ -12,12 +12,20 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
 import { usePrivy } from '@privy-io/react-auth';
-import { CoinsIcon, LogOutIcon, MessageSquareIcon, SettingsIcon, UserIcon } from 'lucide-react';
+import {
+  CoinsIcon,
+  HistoryIcon,
+  LogOutIcon,
+  MessageSquareIcon,
+  SettingsIcon,
+  UserIcon,
+} from 'lucide-react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 
 const NAV_LINKS = [
   { href: '/chat', label: 'Chat', icon: MessageSquareIcon },
+  { href: '/history', label: 'History', icon: HistoryIcon },
   { href: '/settings', label: 'Settings', icon: SettingsIcon },
 ] as const;
 

@@ -1,9 +1,12 @@
 import type { Connection, PublicKey } from '@solana/web3.js';
 import {
   type Db,
+  computeRunway,
   ensureSubscriptionsForTreasury,
+  getFailureReasons,
   listAddressBookEntries,
   listSubscriptions,
+  listTransactionHistory,
 } from '@tc/db';
 import { getJupiterUsdcPosition, getJupiterUsdcSupplyApy } from '@tc/protocols/jupiter';
 import { getKaminoUsdcPosition, getKaminoUsdcSupplyApy } from '@tc/protocols/kamino';
@@ -251,6 +254,118 @@ export function buildTools(db: Db, ctx: ToolContext) {
             updatedAt: r.updatedAt.toISOString(),
           })),
         };
+      },
+    }),
+    getTransactionHistory: tool({
+      description:
+        "Read-only listing of the treasury's recent proposed actions (deposit, withdraw, rebalance, transfer) — newest first. Call this when the user asks 'what did I do last week?', 'show my recent transfers', 'when did I deposit to kamino?', 'did the $5k to Acme go through?', etc. Optional filters: `kind` (one of deposit/withdraw/rebalance/transfer), `status` (one of pending/approved/executing/executed/failed/denied), `sinceDays` (look back window — server filters to actions created within that many days; omit for no time bound). `limit` defaults to 20 and caps at 50; for broad surveys prefer a larger limit + filter rather than multiple calls. Each entry includes `kind`, `status`, `amountUsdc`, `venue` (deposit/withdraw/rebalance), `toVenue` (rebalance only), `recipientAddress` + `recipientLabel` (transfer; label is resolved server-side from the current address book — if you see a label, prefer it in your response), `memo` (transfer), `txSignature` (executed/failed rows that broadcasted), `createdAt`, `executedAt`, and `failureReason` (failed rows only). This tool cannot edit history — it's purely a read.",
+      inputSchema: z.object({
+        limit: z.number().int().min(1).max(50).optional(),
+        kind: z.enum(['deposit', 'withdraw', 'rebalance', 'transfer']).optional(),
+        status: z
+          .enum(['pending', 'approved', 'executing', 'denied', 'executed', 'failed'])
+          .optional(),
+        sinceDays: z.number().int().min(1).max(365).optional(),
+      }),
+      execute: async (input) => {
+        // No cursor here — the chat tool returns one bounded slice per
+        // call. If the model wants older actions it can ask the user
+        // to bump `sinceDays` or `limit`.
+        const rows = await listTransactionHistory(db, {
+          treasuryId: ctx.treasuryId,
+          limit: input.limit ?? 20,
+          ...(input.kind && { kind: input.kind }),
+          ...(input.status && { status: input.status }),
+        });
+        // sinceDays applied in JS (the DB query doesn't accept a time
+        // floor — adding one to listTransactionHistory would muddy the
+        // cursor pagination contract). Rows are already
+        // createdAt-descending; truncate when we cross the boundary.
+        const filtered = input.sinceDays
+          ? (() => {
+              const floor = Date.now() - input.sinceDays * 24 * 60 * 60 * 1000;
+              const idx = rows.findIndex((r) => r.createdAt.getTime() < floor);
+              return idx < 0 ? rows : rows.slice(0, idx);
+            })()
+          : rows;
+
+        const failedIds = filtered.filter((r) => r.status === 'failed').map((r) => r.id);
+        const [bookRows, failureReasons] = await Promise.all([
+          listAddressBookEntries(db, ctx.treasuryId),
+          failedIds.length > 0 ? getFailureReasons(db, failedIds) : Promise.resolve(new Map()),
+        ]);
+        const labels = new Map<string, string>();
+        for (const b of bookRows) labels.set(b.recipientAddress, b.label);
+
+        return {
+          treasuryId: ctx.treasuryId,
+          count: filtered.length,
+          entries: filtered.map((r) => {
+            const p = r.payload;
+            const venue =
+              p.kind === 'deposit' || p.kind === 'withdraw'
+                ? p.venue
+                : p.kind === 'rebalance'
+                  ? p.fromVenue
+                  : null;
+            const toVenue = p.kind === 'rebalance' ? p.toVenue : null;
+            const recipientAddress = p.kind === 'transfer' ? p.recipientAddress : null;
+            const recipientLabel =
+              p.kind === 'transfer' ? (labels.get(p.recipientAddress) ?? null) : null;
+            const memo = p.kind === 'transfer' ? (p.memo ?? null) : null;
+            return {
+              id: r.id,
+              kind: p.kind,
+              status: r.status,
+              amountUsdc: r.amountUsdc,
+              venue,
+              toVenue,
+              recipientAddress,
+              recipientLabel,
+              memo,
+              txSignature: r.txSignature,
+              createdAt: r.createdAt.toISOString(),
+              executedAt: r.executedAt ? r.executedAt.toISOString() : null,
+              failureReason: r.status === 'failed' ? (failureReasons.get(r.id) ?? null) : null,
+            };
+          }),
+        };
+      },
+    }),
+    getRunway: tool({
+      description:
+        "Compute the treasury's runway: total liquid USDC (wallet + every yield-venue position) divided by the average daily outflow over the past `windowDays` (default 90). Call this when the user asks 'how long do I have', 'what's my runway', 'can I afford X', 'will I run out before Y', 'monthly burn', etc. Returns `totalLiquidUsdc`, `avgDailyOutflowUsdc`, `runwayMonths` (null when there's been zero outflow in the window — explain to the user that runway is indefinite at current spend), `windowDays` echoed back, and `asOf` ISO timestamp. For 'can I afford $X' style questions, compare X against totalLiquidUsdc directly AND mention the impact on runwayMonths (subtract X from totalLiquidUsdc, divide by avgDailyOutflowUsdc × 30). Outflow is the sum of executed `transfer` actions only — deposits and rebalances stay inside the treasury so they don't reduce runway.",
+      inputSchema: z.object({
+        windowDays: z.number().int().min(7).max(365).optional(),
+      }),
+      execute: async (input) => {
+        const windowDays = input.windowDays ?? 90;
+        // Position fan-out mirrors getTreasurySnapshot above: Kamino +
+        // Save are mature and fail loud; Jupiter SDK is pre-1.0 and
+        // wrapped in allSettled so its hiccups don't sink the runway
+        // number. Wallet read always runs.
+        const [walletUsdc, kaminoPos, savePos] = await Promise.all([
+          getWalletUsdcBalance(ctx.connection, ctx.treasuryAddress),
+          getKaminoUsdcPosition(ctx.connection, ctx.treasuryAddress),
+          getSaveUsdcPosition(ctx.connection, ctx.treasuryAddress),
+        ]);
+        const [jupiterPosResult] = await Promise.allSettled([
+          getJupiterUsdcPosition(ctx.connection, ctx.treasuryAddress),
+        ]);
+        if (jupiterPosResult.status === 'rejected') {
+          console.warn('[runway] jupiter position read failed:', jupiterPosResult.reason);
+        }
+        const jupiterUsdc =
+          jupiterPosResult.status === 'fulfilled' ? jupiterPosResult.value.amountUsdc : '0';
+
+        return computeRunway(db, {
+          treasuryId: ctx.treasuryId,
+          walletUsdc: walletUsdc.amountUsdc,
+          kaminoUsdc: kaminoPos.amountUsdc,
+          saveUsdc: savePos.amountUsdc,
+          jupiterUsdc,
+          windowDays,
+        });
       },
     }),
     getAlertConfig: tool({

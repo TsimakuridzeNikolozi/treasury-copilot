@@ -1,5 +1,18 @@
 import type { PolicyDecision, ProposedAction } from '@tc/types';
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  like,
+  lt,
+  or,
+  sql,
+} from 'drizzle-orm';
 import type { Db } from '../client';
 import {
   type ApprovalRow,
@@ -108,6 +121,75 @@ function venueFor(action: ProposedAction): ProposedActionRow['venue'] {
     case 'transfer':
       return null;
   }
+}
+
+// M4 — transaction history.
+//
+// Stable keyset pagination on (created_at DESC, id DESC). createdAt alone
+// is not strictly unique (two rows can land in the same microsecond on a
+// fast insert path), so the id tiebreak keeps "Load more" from skipping
+// or re-emitting a row across page boundaries. The existing index
+// `proposed_actions_treasury_id_status_idx` covers the treasury scope;
+// (created_at, id) ordering is in-memory after that filter and bounded
+// by `limit`.
+//
+// `before` is the cursor — { createdAt, id } pulled from the last row of
+// the previous page. Omit for the first page. Filters (`kind`, `status`)
+// are AND-combined with the cursor; the SQL stays in one query plan.
+//
+// limit defaults to 50, hard-capped at 200 so a forgetful caller can't
+// pull the whole history in one request. The route layer surfaces the
+// max via Zod validation; this is defense-in-depth for non-route callers
+// (chat tool, scripts).
+export interface ListTransactionHistoryInput {
+  treasuryId: string;
+  limit?: number;
+  // Cursor row from the previous page (the LAST row's createdAt + id).
+  // Rows STRICTLY before this point are returned, descending.
+  before?: { createdAt: Date; id: string };
+  // Filter by `payload->>'kind'`. Same set the executor knows about.
+  kind?: ProposedAction['kind'];
+  status?: ActionStatus;
+}
+
+const HISTORY_DEFAULT_LIMIT = 50;
+const HISTORY_MAX_LIMIT = 200;
+
+export async function listTransactionHistory(
+  db: Db,
+  input: ListTransactionHistoryInput,
+): Promise<ProposedActionRow[]> {
+  const limit = Math.min(input.limit ?? HISTORY_DEFAULT_LIMIT, HISTORY_MAX_LIMIT);
+  // Keyset condition: (created_at < cursor.createdAt) OR (created_at =
+  // cursor.createdAt AND id < cursor.id). The OR-tiebreak guarantees
+  // strict progress even when two rows share createdAt.
+  const cursorCondition = input.before
+    ? or(
+        lt(proposedActions.createdAt, input.before.createdAt),
+        and(
+          eq(proposedActions.createdAt, input.before.createdAt),
+          lt(proposedActions.id, input.before.id),
+        ),
+      )
+    : undefined;
+  const kindCondition = input.kind
+    ? sql`${proposedActions.payload} ->> 'kind' = ${input.kind}`
+    : undefined;
+  const statusCondition = input.status ? eq(proposedActions.status, input.status) : undefined;
+
+  return db
+    .select()
+    .from(proposedActions)
+    .where(
+      and(
+        eq(proposedActions.treasuryId, input.treasuryId),
+        ...(cursorCondition ? [cursorCondition] : []),
+        ...(kindCondition ? [kindCondition] : []),
+        ...(statusCondition ? [statusCondition] : []),
+      ),
+    )
+    .orderBy(desc(proposedActions.createdAt), desc(proposedActions.id))
+    .limit(limit);
 }
 
 export interface InsertProposedActionInput {
@@ -545,6 +627,49 @@ export async function recordApproval(
 
     return { approval, action };
   });
+}
+
+// Latest failure reason per action id. Reads the most recent
+// status_transition audit row whose payload.extra.error is set —
+// this is the shape the executor writes when transitioning a row to
+// `failed` (see apps/worker/src/executor.ts:48-54). Used by the
+// history surfaces to fill `failureReason` on failed rows without
+// JOINing audit_logs into every list query.
+//
+// Caller filters to the failed-status rows first; passing other ids
+// is harmless but wastes work.
+export async function getFailureReasons(
+  db: Db,
+  actionIds: readonly string[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (actionIds.length === 0) return out;
+  const rows = await db
+    .select({
+      actionId: auditLogs.actionId,
+      payload: auditLogs.payload,
+      createdAt: auditLogs.createdAt,
+    })
+    .from(auditLogs)
+    .where(
+      and(
+        inArray(auditLogs.actionId, actionIds as string[]),
+        eq(auditLogs.kind, 'status_transition'),
+        sql`${auditLogs.payload} -> 'extra' ->> 'error' IS NOT NULL`,
+      ),
+    )
+    .orderBy(desc(auditLogs.createdAt))
+    .limit(actionIds.length * 10);
+  for (const r of rows) {
+    if (!r.actionId || out.has(r.actionId)) continue;
+    const extra =
+      r.payload && typeof r.payload === 'object' && 'extra' in r.payload
+        ? (r.payload as { extra?: { error?: unknown } }).extra
+        : undefined;
+    const error = extra && typeof extra.error === 'string' ? extra.error : null;
+    if (error) out.set(r.actionId, error);
+  }
+  return out;
 }
 
 export type { AuditLogRow };

@@ -129,12 +129,19 @@ export async function PATCH(req: Request) {
       maxSingleActionUsdc: parsed.data.maxSingleActionUsdc,
       // Falls back to the existing DB value when the body omits this field
       // (current policy editor has no UI for it). Callers that do supply it win.
+      // DEFAULT_POLICY is the second fallback for rows that pre-date this
+      // field — `getPolicy` returns DEFAULT when the row is missing, but a
+      // legacy row that pre-dates the column ends up with undefined here.
       maxSingleTransferUsdc:
-        parsed.data.maxSingleTransferUsdc ?? existing.maxSingleTransferUsdc,
+        parsed.data.maxSingleTransferUsdc ??
+        existing.maxSingleTransferUsdc ??
+        DEFAULT_POLICY.maxSingleTransferUsdc,
       maxAutoApprovedUsdcPer24h: parsed.data.maxAutoApprovedUsdcPer24h,
       allowedVenues: parsed.data.allowedVenues,
       requireAddressBookForTransfers:
-        parsed.data.requireAddressBookForTransfers ?? existing.requireAddressBookForTransfers,
+        parsed.data.requireAddressBookForTransfers ??
+        existing.requireAddressBookForTransfers ??
+        DEFAULT_POLICY.requireAddressBookForTransfers,
     },
     updatedBy: auth.userId,
   });

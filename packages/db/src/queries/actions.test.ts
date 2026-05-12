@@ -11,6 +11,7 @@ import {
   TransitionConflictError,
   findPendingForTelegram,
   insertProposedAction,
+  listTransactionHistory,
   setTelegramRouting,
   sumAutoApprovedSince,
   transitionAction,
@@ -357,6 +358,71 @@ describe.skipIf(SKIP)('queries/actions', () => {
           .set({ telegramChatId: null })
           .where(eq(schema.treasuries.id, TEST_TREASURY_ID));
       }
+    });
+  });
+
+  // M4 — transaction history. Verifies the (treasury_id, createdAt DESC, id
+  // DESC) ordering + the cursor strictness contract: paging never skips a
+  // row and never re-emits one across page boundaries.
+  describe('listTransactionHistory', () => {
+    it('returns rows for the treasury newest-first; filters by kind + status', async () => {
+      const a1 = await insertProposedAction(db, {
+        action: deposit('100'),
+        decision: { kind: 'allow', action: deposit('100') },
+        proposedBy: 's',
+      });
+      const a2 = await insertProposedAction(db, {
+        action: deposit('200'),
+        decision: { kind: 'requires_approval', reason: 'over' },
+        proposedBy: 's',
+      });
+      const all = await listTransactionHistory(db, { treasuryId: TEST_TREASURY_ID });
+      expect(all.map((r) => r.id)).toEqual([a2.id, a1.id]);
+
+      const approvedOnly = await listTransactionHistory(db, {
+        treasuryId: TEST_TREASURY_ID,
+        status: 'approved',
+      });
+      expect(approvedOnly.map((r) => r.id)).toEqual([a1.id]);
+
+      const allDeposits = await listTransactionHistory(db, {
+        treasuryId: TEST_TREASURY_ID,
+        kind: 'deposit',
+      });
+      expect(allDeposits.map((r) => r.id)).toEqual([a2.id, a1.id]);
+    });
+
+    it('paginates via the (createdAt, id) cursor without overlap or gaps', async () => {
+      // Insert 5 rows; ask for two pages of 2 + a trailing page of 1.
+      const inserted: string[] = [];
+      for (let i = 0; i < 5; i++) {
+        const row = await insertProposedAction(db, {
+          action: deposit(String(100 + i)),
+          decision: { kind: 'allow', action: deposit(String(100 + i)) },
+          proposedBy: 's',
+        });
+        inserted.push(row.id);
+      }
+      inserted.reverse(); // expect newest-first
+
+      const p1 = await listTransactionHistory(db, { treasuryId: TEST_TREASURY_ID, limit: 2 });
+      expect(p1.map((r) => r.id)).toEqual(inserted.slice(0, 2));
+
+      const last1 = p1[p1.length - 1]!;
+      const p2 = await listTransactionHistory(db, {
+        treasuryId: TEST_TREASURY_ID,
+        limit: 2,
+        before: { createdAt: last1.createdAt, id: last1.id },
+      });
+      expect(p2.map((r) => r.id)).toEqual(inserted.slice(2, 4));
+
+      const last2 = p2[p2.length - 1]!;
+      const p3 = await listTransactionHistory(db, {
+        treasuryId: TEST_TREASURY_ID,
+        limit: 2,
+        before: { createdAt: last2.createdAt, id: last2.id },
+      });
+      expect(p3.map((r) => r.id)).toEqual(inserted.slice(4));
     });
   });
 });

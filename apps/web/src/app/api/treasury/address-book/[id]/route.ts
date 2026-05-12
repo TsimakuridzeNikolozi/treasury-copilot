@@ -51,7 +51,9 @@ function noActiveTreasury(setCookieHeader?: string): Response {
 // Next 15's typed route handlers pass `params` as a Promise (matches the
 // dynamic-segment async resolution that landed in 15.x). The handler
 // awaits it before validating.
-interface Ctx { params: Promise<{ id: string }> }
+interface Ctx {
+  params: Promise<{ id: string }>;
+}
 
 const idSchema = z.string().uuid();
 

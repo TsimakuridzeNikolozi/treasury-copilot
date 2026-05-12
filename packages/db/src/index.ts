@@ -30,5 +30,6 @@ export * from './queries/apy';
 export * from './queries/memberships';
 export * from './queries/notifications';
 export * from './queries/policies';
+export * from './queries/runway';
 export * from './queries/treasuries';
 export * from './queries/users';
