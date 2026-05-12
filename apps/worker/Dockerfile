@@ -11,8 +11,7 @@ FROM base AS builder
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json turbo.json tsconfig.base.json ./
 COPY apps/worker ./apps/worker
 COPY packages ./packages
-RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
-    pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @tc/worker build
 RUN pnpm deploy --filter=@tc/worker --prod /prod/worker
 

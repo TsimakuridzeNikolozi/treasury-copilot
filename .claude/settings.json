@@ -4,7 +4,10 @@
     "deny": [
       "Read(**/.env)",
       "Read(**/.env.local)",
+      "Read(**/.env.prod)",
       "Read(**/.env.*.local)",
+      "Read(**/*.env.prod)",
+      "Read(**/*.env.*.local)",
       "Read(./keys/**)",
       "Read(**/*.keypair.json)",
       "Bash(cat ./keys/**)",
