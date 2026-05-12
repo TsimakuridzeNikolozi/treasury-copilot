@@ -8,7 +8,7 @@ const UsdcAmountSchema = z
   .string()
   .regex(/^\d+(\.\d{1,6})?$/, 'amount must be a decimal string with up to 6 fraction digits');
 
-const SolanaAddressSchema = z
+export const SolanaAddressSchema = z
   .string()
   .regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/, 'must be a base58 Solana address');
 

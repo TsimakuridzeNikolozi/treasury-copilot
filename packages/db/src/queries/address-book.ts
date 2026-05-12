@@ -77,7 +77,7 @@ export async function insertAddressBookEntry(
     });
 
     return row;
-  });
+  }, { isolationLevel: 'serializable' });
 }
 
 export interface UpdateAddressBookEntryInput {
@@ -161,7 +161,7 @@ export async function updateAddressBookEntry(
     });
 
     return row;
-  });
+  }, { isolationLevel: 'serializable' });
 }
 
 export interface DeleteAddressBookEntryInput {
@@ -207,7 +207,7 @@ export async function deleteAddressBookEntry(
     });
 
     return row;
-  });
+  }, { isolationLevel: 'serializable' });
 }
 
 // Stable ordering: created_at desc so the most recently added entry

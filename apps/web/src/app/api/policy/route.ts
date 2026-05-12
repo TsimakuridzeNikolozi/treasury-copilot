@@ -127,10 +127,10 @@ export async function PATCH(req: Request) {
     policy: {
       requireApprovalAboveUsdc: parsed.data.requireApprovalAboveUsdc,
       maxSingleActionUsdc: parsed.data.maxSingleActionUsdc,
-      // Falls back to DEFAULT_POLICY when the body omits this field (current
-      // policy editor has no UI for it). Callers that do supply it win.
+      // Falls back to the existing DB value when the body omits this field
+      // (current policy editor has no UI for it). Callers that do supply it win.
       maxSingleTransferUsdc:
-        parsed.data.maxSingleTransferUsdc ?? DEFAULT_POLICY.maxSingleTransferUsdc,
+        parsed.data.maxSingleTransferUsdc ?? existing.maxSingleTransferUsdc,
       maxAutoApprovedUsdcPer24h: parsed.data.maxAutoApprovedUsdcPer24h,
       allowedVenues: parsed.data.allowedVenues,
       requireAddressBookForTransfers:

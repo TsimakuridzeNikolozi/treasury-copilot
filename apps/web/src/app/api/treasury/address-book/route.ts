@@ -20,7 +20,7 @@ export const dynamic = 'force-dynamic';
 // surface for a single regex, and the boundary contract is the regex
 // itself (a divergence here would surface in tests). 32..44 chars covers
 // every legal Solana base58 address.
-const SOLANA_ADDRESS_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+export const SOLANA_ADDRESS_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 // Label is a human pointer; 64 chars is generous for "Acme Corp - Q1
 // payroll" style entries while preventing pathological lengths from

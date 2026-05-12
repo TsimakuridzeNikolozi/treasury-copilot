@@ -1,3 +1,4 @@
+import { SolanaAddressSchema } from '@tc/types';
 import { describe, expect, it, vi } from 'vitest';
 
 // Hoisted mocks so vi.mock factories can reference them safely.
@@ -31,7 +32,7 @@ vi.mock('@tc/db', () => ({
   isAddressBookAddressConflict: mocks.isAddressBookAddressConflict,
 }));
 
-const { GET, POST } = await import('./route');
+const { GET, POST, SOLANA_ADDRESS_REGEX } = await import('./route');
 
 const TREASURY_ID = '00000000-0000-4000-8000-000000000aaa';
 const OTHER_TREASURY_ID = '00000000-0000-4000-8000-00000000bbbb';
@@ -76,6 +77,15 @@ function postReq(body: unknown): Request {
     body: JSON.stringify(body),
   });
 }
+
+it('SOLANA_ADDRESS_REGEX matches the source regex in SolanaAddressSchema (@tc/types)', () => {
+  const typesCheck = SolanaAddressSchema._def.checks.find(
+    (c): c is { kind: 'regex'; regex: RegExp; message: string } => c.kind === 'regex',
+  );
+  expect(typesCheck).toBeDefined();
+  expect(SOLANA_ADDRESS_REGEX.source).toBe(typesCheck?.regex.source);
+  expect(SOLANA_ADDRESS_REGEX.flags).toBe(typesCheck?.regex.flags ?? '');
+});
 
 describe('GET /api/treasury/address-book', () => {
   it('401 on missing bearer', async () => {
