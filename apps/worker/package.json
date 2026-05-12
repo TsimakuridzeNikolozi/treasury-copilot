@@ -2,11 +2,12 @@
   "name": "@tc/worker",
   "version": "0.0.0",
   "private": true,
+  "type": "module",
   "main": "./dist/index.mjs",
   "scripts": {
     "dev": "tsx watch --env-file=.env src/index.ts",
     "build": "tsup",
-    "start": "node --env-file=.env dist/index.js",
+    "start": "node --env-file=.env dist/index.mjs",
     "lint": "biome check src",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
