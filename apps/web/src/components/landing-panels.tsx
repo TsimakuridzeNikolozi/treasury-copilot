@@ -10,6 +10,8 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 
+const LOGOUT_TIMEOUT_MS = 4000;
+
 // Two client islands hosted on the otherwise-server-rendered "/" page.
 // `SignInPanel` triggers Privy's email OTP flow; `SignedInPanel` is the
 // returning-user landing card with sign-out + Open chat affordances.
@@ -63,8 +65,11 @@ export function SignedInPanel({ email, did, telegramConnected }: SignedInPanelPr
   const router = useRouter();
 
   const onSignOut = async () => {
-    await Promise.allSettled([logout(), fetch('/api/auth/logout', { method: 'POST' })]);
-    router.replace('/');
+    try {
+      await Promise.allSettled([logout(), clearActiveTreasuryCookie()]);
+    } finally {
+      router.replace('/');
+    }
   };
 
   const label = email ?? (did ? `…${did.slice(-12)}` : 'guest');
@@ -134,21 +139,38 @@ export function HeroStats({
   return (
     <dl className="grid max-w-md grid-cols-3 gap-4 border-t pt-5 sm:gap-6">
       <div>
-        <Mono className="block text-foreground text-xl">${underManagementUsdc}</Mono>
         <dt className="mt-1 text-[11px] text-muted-foreground">Under management</dt>
+        <dd className="block text-foreground text-xl">
+          <Mono>${underManagementUsdc}</Mono>
+        </dd>
       </div>
       <div>
-        <Mono className="block text-foreground text-xl">{blendedApyPct ?? '—'}</Mono>
         <dt className="mt-1 text-[11px] text-muted-foreground">Blended APY</dt>
+        <dd className="block text-foreground text-xl">
+          <Mono>{blendedApyPct ?? '—'}</Mono>
+        </dd>
       </div>
       <div>
-        <Mono className="block text-foreground text-xl">
-          {actionsAuditedCount.toLocaleString('en-US')}
-        </Mono>
         <dt className="mt-1 text-[11px] text-muted-foreground">Actions audited</dt>
+        <dd className="block text-foreground text-xl">
+          <Mono>{actionsAuditedCount.toLocaleString('en-US')}</Mono>
+        </dd>
       </div>
     </dl>
   );
+}
+
+async function clearActiveTreasuryCookie() {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), LOGOUT_TIMEOUT_MS);
+
+  try {
+    await fetch('/api/auth/logout', { method: 'POST', signal: controller.signal });
+  } catch {
+    // Navigation still happens in the sign-out handler's finally block.
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 export function FeatureRow() {

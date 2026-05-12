@@ -123,17 +123,27 @@ export function ChatClient({
 
   const { messages, sendMessage, status, error } = useChat({ transport });
 
-  useEffect(() => { setMounted(true); }, []);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Refresh the server-rendered sidebar (snapshot + recent history) after
   // each AI turn finishes streaming. Triggers only on the 'ready'
   // transition so we don't refetch on every token.
   const prevStatusRef = useRef(status);
+  const prevMessagesCountRef = useRef(messages.length);
   useEffect(() => {
-    if (prevStatusRef.current !== 'ready' && status === 'ready' && messages.length > 0) {
+    const messageCountIncreased = messages.length > prevMessagesCountRef.current;
+    if (
+      prevStatusRef.current !== 'ready' &&
+      status === 'ready' &&
+      messages.length > 0 &&
+      messageCountIncreased
+    ) {
       routerRef.current.refresh();
     }
     prevStatusRef.current = status;
+    prevMessagesCountRef.current = messages.length;
   }, [status, messages.length]);
 
   const onSubmit = (msg: PromptInputMessage) => {

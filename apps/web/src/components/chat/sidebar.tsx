@@ -65,6 +65,7 @@ export function ChatSidebar({
   const idleUsdc = snapshot?.walletUsdc ?? '—';
   const totalUsdc = snapshot?.totalUsdc ?? '—';
   const blendedApy = snapshot?.blendedApyPct ?? null;
+  const hasSnapshot = snapshot !== null;
 
   return (
     <>
@@ -114,7 +115,12 @@ export function ChatSidebar({
         </div>
 
         <div className="flex-1 overflow-y-auto">
-          <BalanceBlock totalUsdc={totalUsdc} blendedApy={blendedApy} live={snapshot !== null} />
+          <BalanceBlock
+            totalUsdc={totalUsdc}
+            blendedApy={blendedApy}
+            live={hasSnapshot}
+            hasSnapshot={hasSnapshot}
+          />
           <PositionsBlock positions={snapshot?.positions ?? []} idleUsdc={idleUsdc} />
           <RecentActivityBlock entries={recentHistory} treasuryName={treasuryName} />
         </div>
@@ -129,21 +135,23 @@ function BalanceBlock({
   totalUsdc,
   blendedApy,
   live,
+  hasSnapshot,
 }: {
   totalUsdc: string;
   blendedApy: string | null;
   live: boolean;
+  hasSnapshot: boolean;
 }) {
   return (
     <div className="px-4 py-5">
       <div className="mb-2 flex items-center justify-between">
         <SectionLabel>Treasury</SectionLabel>
-        <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-          {live ? (
+        {live && hasSnapshot ? (
+          <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
             <span aria-hidden className="tc-pulse inline-block size-1 rounded-full bg-primary" />
-          ) : null}
-          <Mono>Live</Mono>
-        </span>
+            <Mono>Live</Mono>
+          </span>
+        ) : null}
       </div>
       <Mono className="block text-2xl text-foreground">${totalUsdc}</Mono>
       <Mono className="text-[11px] text-muted-foreground">

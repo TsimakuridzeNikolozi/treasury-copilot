@@ -2,7 +2,6 @@
 
 import { cn } from '@/lib/utils';
 import { CheckIcon } from 'lucide-react';
-import { Fragment } from 'react';
 
 const STEPS = [
   { n: 1, title: 'Welcome' },
@@ -35,25 +34,23 @@ export function StepIndicator({
         const isLast = i === STEPS.length - 1;
         const clickable = state === 'done';
         return (
-          <Fragment key={s.n}>
-            <li className="min-w-0 flex-1">
-              <button
-                type="button"
-                onClick={clickable ? () => onJump(s.n) : undefined}
-                disabled={!clickable}
-                aria-current={state === 'current' ? 'step' : undefined}
-                className={cn(
-                  'flex w-full items-center gap-2 rounded-md px-2.5 py-2 transition-colors',
-                  state === 'current'
-                    ? 'bg-muted text-foreground shadow-[inset_0_0_0_1px_var(--border)]'
-                    : 'text-muted-foreground',
-                  clickable ? 'cursor-pointer hover:text-foreground' : 'cursor-default',
-                )}
-              >
-                <StepGlyph state={state} n={s.n} />
-                <span className="hidden truncate font-medium text-xs sm:inline">{s.title}</span>
-              </button>
-            </li>
+          <li key={s.n} className="flex min-w-0 flex-1 items-center gap-1.5">
+            <button
+              type="button"
+              onClick={clickable ? () => onJump(s.n) : undefined}
+              disabled={!clickable}
+              aria-current={state === 'current' ? 'step' : undefined}
+              className={cn(
+                'flex min-w-0 flex-1 items-center gap-2 rounded-md px-2.5 py-2 transition-colors',
+                state === 'current'
+                  ? 'bg-muted text-foreground shadow-[inset_0_0_0_1px_var(--border)]'
+                  : 'text-muted-foreground',
+                clickable ? 'cursor-pointer hover:text-foreground' : 'cursor-default',
+              )}
+            >
+              <StepGlyph state={state} n={s.n} />
+              <span className="hidden truncate font-medium text-xs sm:inline">{s.title}</span>
+            </button>
             {!isLast ? (
               <span
                 aria-hidden
@@ -63,7 +60,7 @@ export function StepIndicator({
                 )}
               />
             ) : null}
-          </Fragment>
+          </li>
         );
       })}
     </ol>

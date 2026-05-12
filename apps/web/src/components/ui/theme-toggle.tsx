@@ -26,6 +26,7 @@ export function ThemeToggle({ size = 'md' }: { size?: 'sm' | 'md' | 'lg' }) {
     <IconButton
       size={size}
       aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+      aria-pressed={isDark}
       onClick={() => setTheme(isDark ? 'light' : 'dark')}
     >
       {isDark ? <SunIcon /> : <MoonIcon />}

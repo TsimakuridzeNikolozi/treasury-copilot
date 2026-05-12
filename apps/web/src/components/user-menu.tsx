@@ -14,6 +14,8 @@ import { LogOutIcon, UserIcon } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
+const LOGOUT_TIMEOUT_MS = 4000;
+
 // Avatar circle + truncated email + logout. Extracted from the old
 // AppNav so the AppShell header can compose it alongside other tools
 // without dragging in nav-link logic that's no longer global.
@@ -28,9 +30,13 @@ export function UserMenu() {
   const onSignOut = async () => {
     // Clear our active-treasury cookie in parallel with Privy's session
     // teardown so user A's selection doesn't leak to user B on the same
-    // browser. /api/auth/logout is fire-and-forget — idempotent.
-    await Promise.allSettled([logout(), fetch('/api/auth/logout', { method: 'POST' })]);
-    router.replace('/');
+    // browser. /api/auth/logout is bounded by a short timeout so routing
+    // still proceeds if the network hangs.
+    try {
+      await Promise.allSettled([logout(), clearActiveTreasuryCookie()]);
+    } finally {
+      router.replace('/');
+    }
   };
 
   return (
@@ -81,4 +87,17 @@ export function UserMenu() {
       </DropdownMenuContent>
     </DropdownMenu>
   );
+}
+
+async function clearActiveTreasuryCookie() {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), LOGOUT_TIMEOUT_MS);
+
+  try {
+    await fetch('/api/auth/logout', { method: 'POST', signal: controller.signal });
+  } catch {
+    // Navigation still happens in the sign-out handler's finally block.
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }

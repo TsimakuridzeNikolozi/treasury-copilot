@@ -118,6 +118,7 @@
   html,
   body {
     @apply overflow-x-hidden;
+
     max-width: 100%;
   }
 }

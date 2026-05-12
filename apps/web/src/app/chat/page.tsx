@@ -99,10 +99,10 @@ async function fetchSnapshot(treasuryAddress: PublicKey): Promise<SidebarSnapsho
     const jupiterApy =
       jupiterApyResult.status === 'fulfilled' ? jupiterApyResult.value.apyDecimal : null;
 
-    const wallet = Number.parseFloat(walletUsdc.amountUsdc);
-    const k = Number.parseFloat(kaminoPos.amountUsdc);
-    const s = Number.parseFloat(savePos.amountUsdc);
-    const j = jupiterAmount !== null ? Number.parseFloat(jupiterAmount) : 0;
+    const wallet = parseUsdcAmount(walletUsdc.amountUsdc);
+    const k = parseUsdcAmount(kaminoPos.amountUsdc);
+    const s = parseUsdcAmount(savePos.amountUsdc);
+    const j = parseUsdcAmount(jupiterAmount);
     const totalNum = wallet + k + s + j;
     const positionsSum = k + s + j;
 
@@ -145,6 +145,11 @@ async function fetchSnapshot(treasuryAddress: PublicKey): Promise<SidebarSnapsho
 
 function formatUsdc(n: number): string {
   return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function parseUsdcAmount(amount: string | null): number {
+  const parsed = amount !== null ? Number.parseFloat(amount) : 0;
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function formatPct(decimal: number): string {
