@@ -40,7 +40,21 @@ import { usePrivy } from '@privy-io/react-auth';
 import { DefaultChatTransport, type ToolUIPart } from 'ai';
 import { CoinsIcon, MenuIcon, ShieldIcon, SparklesIcon, XIcon } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+
+// Tool names that mutate on-chain state. After a turn containing any of
+// these, we enter fast-poll mode so the sidebar reflects the new balances
+// within seconds of the worker executing the action.
+const WRITE_TOOLS = new Set([
+  'proposeDeposit',
+  'proposeWithdraw',
+  'proposeRebalance',
+  'proposeTransfer',
+]);
+
+const POLL_INTERVAL_NORMAL_MS = 30_000; // background heartbeat
+const POLL_INTERVAL_FAST_MS = 5_000; // right after a write action
+const FAST_POLL_WINDOW_MS = 90_000; // how long to stay in fast mode
 
 // Provider labels shown in the model picker. Whichever the user picks,
 // the policy engine is still the only thing that decides actions —
@@ -81,6 +95,14 @@ export function ChatClient({
   const [mobileOpen, setMobileOpen] = useState(false);
   const [provider, setProvider] = useState<ModelProvider>('anthropic');
   const [mounted, setMounted] = useState(false);
+  // Live-updated snapshot and history from client-side polling — override
+  // the SSR props once fresh data arrives so balances stay current after
+  // the worker executes actions without requiring a full router.refresh().
+  const [liveSnapshot, setLiveSnapshot] = useState<SidebarSnapshot | null>(null);
+  const [liveHistory, setLiveHistory] = useState<ReadonlyArray<HistoryEntryDto> | null>(null);
+  // Incremented to immediately restart the polling loop (e.g., after a
+  // write tool call completes) without waiting for the current timer.
+  const [pollNonce, setPollNonce] = useState(0);
   const { getAccessToken } = usePrivy();
   const router = useRouter();
 
@@ -88,6 +110,8 @@ export function ChatClient({
   getAccessTokenRef.current = getAccessToken;
   const routerRef = useRef(router);
   routerRef.current = router;
+  // Absolute timestamp after which we revert from fast-poll to normal-poll.
+  const fastPollUntilRef = useRef(0);
 
   const [transport] = useState(
     () =>
@@ -127,9 +151,70 @@ export function ChatClient({
     setMounted(true);
   }, []);
 
+  // Client-side snapshot polling. Keeps the sidebar balances and recent
+  // history live without a full router.refresh():
+  //  - Normal mode: 30s heartbeat.
+  //  - Fast mode: 5s for 90s after any write tool call (deposit / withdraw /
+  //    rebalance / transfer) — catches the worker's execution within seconds.
+  // The pollNonce state is incremented to immediately restart the loop when
+  // entering fast mode (rather than waiting for the current timer to expire).
+  const doSnapshotPoll = useCallback(async () => {
+    try {
+      const token = await getAccessTokenRef.current();
+      if (!token) return;
+      const res = await fetch(`/api/treasury/snapshot?treasuryId=${activeTreasuryId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401 || res.status === 403) {
+        routerRef.current.replace('/');
+        return;
+      }
+      if (res.status === 409) {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        if (body?.error === 'active_treasury_changed') window.location.reload();
+        else if (body?.error === 'no_active_treasury') routerRef.current.replace('/');
+        return;
+      }
+      if (!res.ok) return;
+      const data = (await res.json()) as {
+        snapshot: SidebarSnapshot | null;
+        recentHistory: ReadonlyArray<HistoryEntryDto>;
+      };
+      if (data.snapshot) setLiveSnapshot(data.snapshot);
+      if (data.recentHistory) setLiveHistory(data.recentHistory);
+    } catch {
+      // Network error — silent, retry on next tick.
+    }
+  }, [activeTreasuryId]);
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    let cancelled = false;
+
+    async function tick() {
+      if (cancelled) return;
+      await doSnapshotPoll();
+      if (cancelled) return;
+      const interval =
+        Date.now() < fastPollUntilRef.current ? POLL_INTERVAL_FAST_MS : POLL_INTERVAL_NORMAL_MS;
+      timer = setTimeout(tick, interval);
+    }
+
+    // On initial mount (pollNonce=0) wait the full normal interval so we
+    // don't duplicate the SSR fetch immediately. On nonce bumps (write tool
+    // detected) start right away to pick up the freshly executed action.
+    const initialDelay = pollNonce === 0 ? POLL_INTERVAL_NORMAL_MS : 0;
+    timer = setTimeout(tick, initialDelay);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [pollNonce, doSnapshotPoll]);
+
   // Refresh the server-rendered sidebar (snapshot + recent history) after
-  // each AI turn finishes streaming. Triggers only on the 'ready'
-  // transition so we don't refetch on every token.
+  // each AI turn finishes streaming. Also enters fast-poll mode when the
+  // turn contained a write tool call so subsequent polls see the new balances.
   const prevStatusRef = useRef(status);
   const prevMessagesCountRef = useRef(messages.length);
   useEffect(() => {
@@ -141,10 +226,27 @@ export function ChatClient({
       messageCountIncreased
     ) {
       routerRef.current.refresh();
+
+      // If the completed turn included a write action, enter fast-poll mode
+      // and immediately restart the polling loop to pick up execution.
+      // Slice to only the messages added in this turn — scanning the full
+      // history would re-trigger fast mode on every turn after any past write.
+      const newMessages = messages.slice(prevMessagesCountRef.current);
+      const hadWriteTool = newMessages.some((m) =>
+        m.parts.some((p) => {
+          if (!p.type.startsWith('tool-')) return false;
+          const tp = p as ToolUIPart;
+          return WRITE_TOOLS.has((tp as unknown as { toolName?: string }).toolName ?? '');
+        }),
+      );
+      if (hadWriteTool) {
+        fastPollUntilRef.current = Date.now() + FAST_POLL_WINDOW_MS;
+        setPollNonce((n) => n + 1);
+      }
     }
     prevStatusRef.current = status;
     prevMessagesCountRef.current = messages.length;
-  }, [status, messages.length]);
+  }, [status, messages.length, messages]);
 
   const onSubmit = (msg: PromptInputMessage) => {
     const text = msg.text.trim();
@@ -157,6 +259,10 @@ export function ChatClient({
     setErrorDismissed(false);
     sendMessage({ text: prompt }, { body: { provider, treasuryId: activeTreasuryId } });
   };
+
+  // Prefer live-polled data over SSR props when available.
+  const activeSnapshot = liveSnapshot ?? snapshot;
+  const activeHistory = liveHistory ?? recentHistory;
 
   // Conversation title: first user message truncated, else placeholder.
   const firstUserText =
@@ -176,8 +282,8 @@ export function ChatClient({
         activeTreasuryId={activeTreasuryId}
         treasuryName={treasuryName}
         telegramUsername={telegramUsername}
-        snapshot={snapshot}
-        recentHistory={recentHistory}
+        snapshot={activeSnapshot}
+        recentHistory={activeHistory}
         mobileOpen={mobileOpen}
         onMobileClose={() => setMobileOpen(false)}
       />
@@ -241,9 +347,9 @@ export function ChatClient({
             see the bottom-line number for context. md:hidden on desktop. */}
         <div className="border-b bg-muted/30 px-4 py-2 md:hidden">
           <Mono className="text-xs text-foreground">
-            ${snapshot?.totalUsdc ?? '—'}
+            ${activeSnapshot?.totalUsdc ?? '—'}
             <span className="ml-2 text-muted-foreground">
-              {snapshot?.blendedApyPct ? `· ${snapshot.blendedApyPct} APY` : '· USDC'}
+              {activeSnapshot?.blendedApyPct ? `· ${activeSnapshot.blendedApyPct} APY` : '· USDC'}
             </span>
           </Mono>
         </div>
