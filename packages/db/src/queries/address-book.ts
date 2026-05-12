@@ -37,47 +37,50 @@ export async function insertAddressBookEntry(
   db: Db,
   input: InsertAddressBookEntryInput,
 ): Promise<AddressBookEntryRow> {
-  return db.transaction(async (tx) => {
-    const [row] = await tx
-      .insert(addressBookEntries)
-      .values({
+  return db.transaction(
+    async (tx) => {
+      const [row] = await tx
+        .insert(addressBookEntries)
+        .values({
+          treasuryId: input.treasuryId,
+          label: input.label,
+          recipientAddress: input.recipientAddress,
+          // `undefined` → drizzle omits the column → Postgres applies the
+          // column DEFAULT (USDC mint). Explicit USDC is fine too; this
+          // path lets callers stay agnostic about the default.
+          ...(input.tokenMint !== undefined && { tokenMint: input.tokenMint }),
+          ...(input.notes !== undefined ? { notes: input.notes } : {}),
+          preApproved: input.preApproved,
+          createdBy: input.createdBy,
+        })
+        .returning();
+
+      if (!row) {
+        // .returning() yields the inserted row on success; missing row
+        // implies the insert was silently rejected, which the typed
+        // builder should never allow. Surface loud rather than fall
+        // through with a half-built shape.
+        throw new Error('addressBookEntries insert returned no row');
+      }
+
+      await tx.insert(auditLogs).values({
+        kind: 'address_book_entry_added',
         treasuryId: input.treasuryId,
-        label: input.label,
-        recipientAddress: input.recipientAddress,
-        // `undefined` → drizzle omits the column → Postgres applies the
-        // column DEFAULT (USDC mint). Explicit USDC is fine too; this
-        // path lets callers stay agnostic about the default.
-        ...(input.tokenMint !== undefined && { tokenMint: input.tokenMint }),
-        ...(input.notes !== undefined ? { notes: input.notes } : {}),
-        preApproved: input.preApproved,
-        createdBy: input.createdBy,
-      })
-      .returning();
+        actor: input.createdBy,
+        payload: {
+          entryId: row.id,
+          label: row.label,
+          recipientAddress: row.recipientAddress,
+          tokenMint: row.tokenMint,
+          preApproved: row.preApproved,
+          notes: row.notes,
+        },
+      });
 
-    if (!row) {
-      // .returning() yields the inserted row on success; missing row
-      // implies the insert was silently rejected, which the typed
-      // builder should never allow. Surface loud rather than fall
-      // through with a half-built shape.
-      throw new Error('addressBookEntries insert returned no row');
-    }
-
-    await tx.insert(auditLogs).values({
-      kind: 'address_book_entry_added',
-      treasuryId: input.treasuryId,
-      actor: input.createdBy,
-      payload: {
-        entryId: row.id,
-        label: row.label,
-        recipientAddress: row.recipientAddress,
-        tokenMint: row.tokenMint,
-        preApproved: row.preApproved,
-        notes: row.notes,
-      },
-    });
-
-    return row;
-  }, { isolationLevel: 'serializable' });
+      return row;
+    },
+    { isolationLevel: 'serializable' },
+  );
 }
 
 export interface UpdateAddressBookEntryInput {
@@ -105,63 +108,66 @@ export async function updateAddressBookEntry(
   db: Db,
   input: UpdateAddressBookEntryInput,
 ): Promise<AddressBookEntryRow> {
-  return db.transaction(async (tx) => {
-    const before = await tx.query.addressBookEntries.findFirst({
-      where: and(
-        eq(addressBookEntries.id, input.id),
-        eq(addressBookEntries.treasuryId, input.treasuryId),
-      ),
-    });
-    if (!before) {
-      throw new AddressBookEntryNotFound(input.id);
-    }
-
-    const now = new Date();
-    const [row] = await tx
-      .update(addressBookEntries)
-      .set({
-        label: input.label,
-        notes: input.notes,
-        preApproved: input.preApproved,
-        updatedAt: now,
-      })
-      .where(
-        and(
+  return db.transaction(
+    async (tx) => {
+      const before = await tx.query.addressBookEntries.findFirst({
+        where: and(
           eq(addressBookEntries.id, input.id),
           eq(addressBookEntries.treasuryId, input.treasuryId),
         ),
-      )
-      .returning();
+      });
+      if (!before) {
+        throw new AddressBookEntryNotFound(input.id);
+      }
 
-    if (!row) {
-      // The .findFirst above just succeeded, so a missing returning()
-      // means the row was deleted between read and update inside the
-      // same transaction — race with a concurrent DELETE. Surface so
-      // the API returns 409/404 instead of silently dropping the edit.
-      throw new AddressBookEntryNotFound(input.id);
-    }
+      const now = new Date();
+      const [row] = await tx
+        .update(addressBookEntries)
+        .set({
+          label: input.label,
+          notes: input.notes,
+          preApproved: input.preApproved,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(addressBookEntries.id, input.id),
+            eq(addressBookEntries.treasuryId, input.treasuryId),
+          ),
+        )
+        .returning();
 
-    await tx.insert(auditLogs).values({
-      kind: 'address_book_entry_updated',
-      treasuryId: input.treasuryId,
-      actor: input.updatedBy,
-      payload: {
-        entryId: row.id,
-        before: {
-          label: before.label,
-          notes: before.notes,
-          preApproved: before.preApproved,
+      if (!row) {
+        // The .findFirst above just succeeded, so a missing returning()
+        // means the row was deleted between read and update inside the
+        // same transaction — race with a concurrent DELETE. Surface so
+        // the API returns 409/404 instead of silently dropping the edit.
+        throw new AddressBookEntryNotFound(input.id);
+      }
+
+      await tx.insert(auditLogs).values({
+        kind: 'address_book_entry_updated',
+        treasuryId: input.treasuryId,
+        actor: input.updatedBy,
+        payload: {
+          entryId: row.id,
+          before: {
+            label: before.label,
+            notes: before.notes,
+            preApproved: before.preApproved,
+          },
+          after: {
+            label: row.label,
+            notes: row.notes,
+            preApproved: row.preApproved,
+          },
         },
-        after: {
-          label: row.label,
-          notes: row.notes,
-          preApproved: row.preApproved,
-        },
-      },
-    });
+      });
 
-    return row;
-  }, { isolationLevel: 'serializable' });
+      return row;
+    },
+    { isolationLevel: 'serializable' },
+  );
 }
 
 export interface DeleteAddressBookEntryInput {
@@ -178,36 +184,39 @@ export async function deleteAddressBookEntry(
   db: Db,
   input: DeleteAddressBookEntryInput,
 ): Promise<AddressBookEntryRow> {
-  return db.transaction(async (tx) => {
-    const [row] = await tx
-      .delete(addressBookEntries)
-      .where(
-        and(
-          eq(addressBookEntries.id, input.id),
-          eq(addressBookEntries.treasuryId, input.treasuryId),
-        ),
-      )
-      .returning();
-    if (!row) {
-      throw new AddressBookEntryNotFound(input.id);
-    }
+  return db.transaction(
+    async (tx) => {
+      const [row] = await tx
+        .delete(addressBookEntries)
+        .where(
+          and(
+            eq(addressBookEntries.id, input.id),
+            eq(addressBookEntries.treasuryId, input.treasuryId),
+          ),
+        )
+        .returning();
+      if (!row) {
+        throw new AddressBookEntryNotFound(input.id);
+      }
 
-    await tx.insert(auditLogs).values({
-      kind: 'address_book_entry_removed',
-      treasuryId: input.treasuryId,
-      actor: input.deletedBy,
-      payload: {
-        entryId: row.id,
-        label: row.label,
-        recipientAddress: row.recipientAddress,
-        tokenMint: row.tokenMint,
-        preApproved: row.preApproved,
-        notes: row.notes,
-      },
-    });
+      await tx.insert(auditLogs).values({
+        kind: 'address_book_entry_removed',
+        treasuryId: input.treasuryId,
+        actor: input.deletedBy,
+        payload: {
+          entryId: row.id,
+          label: row.label,
+          recipientAddress: row.recipientAddress,
+          tokenMint: row.tokenMint,
+          preApproved: row.preApproved,
+          notes: row.notes,
+        },
+      });
 
-    return row;
-  }, { isolationLevel: 'serializable' });
+      return row;
+    },
+    { isolationLevel: 'serializable' },
+  );
 }
 
 // Stable ordering: created_at desc so the most recently added entry

@@ -341,6 +341,43 @@ pnpm db:migrate         # applies 0014 + 0015:
 6. Edit Acme's entry to `pre_approved = false`, repeat step 5's "send 1000 to Acme" — now it escalates to `pending` (Telegram card). Confirms the bypass is gated on the latest pre-approval flag.
 7. `/settings → Policy → Transfer safety` → flip `Require address book for transfers` OFF. Repeat step 3 — now the same "send 0.5 to <raw address>" auto-approves. Flip it back ON when you're done.
 
+### M4 — transaction history page + runway tool
+
+Two read-only surfaces landed off the M4 spec without bundling M4-4 (scheduled outflows) or M4-5's batched-payout side. No migrations, no env changes.
+
+**`/history` page.** New top-level route showing every `proposed_actions` row for the active treasury, newest-first, with kind + status filter dropdowns and cursor-paginated "Load more". Counterparty rendering:
+- `deposit` / `withdraw` → venue badge.
+- `rebalance` → `fromVenue → toVenue`.
+- `transfer` → address-book label (resolved at request time via `listAddressBookEntries`) above truncated base58, plus optional memo line.
+
+Failed rows surface their `failureReason` inline (read from the latest `status_transition` audit log payload's `extra.error` — same shape the executor writes when transitioning `executing → failed`). Tx signature column links to Solscan.
+
+**`GET /api/treasury/history`.** Query params: `limit` (1–200, default 50), `before` (cursor string of `<isoCreatedAt>__<id>`), `kind`, `status`. Returns `{ entries: HistoryEntryDto[], nextCursor }`. Stable keyset pagination on `(created_at DESC, id DESC)` — the `id` tiebreak keeps "Load more" from skipping or duplicating across pages even if two rows share a microsecond.
+
+**`listTransactionHistory(db, { treasuryId, limit?, before?, kind?, status? })`.** New DB query in `actions.ts`. Defaults limit to 50, hard caps at 200. Filter on `payload->>'kind'` for kind (no `kind` column on the row — same path other history queries use). Index in play: `proposed_actions_treasury_id_status_idx`.
+
+**`getFailureReasons(db, actionIds)`.** New batched lookup in `actions.ts` — single SELECT against `audit_logs` for `kind='status_transition' AND payload->'extra'->>'error' IS NOT NULL`, descending; map of `actionId → reason`. Called only when the page has failed rows (most don't).
+
+**`getTransactionHistory` chat tool.** Read-only, mirrors the route's filter surface. Optional `sinceDays` (1–365) applied in JS after the DB read (avoids muddying the cursor contract). Transfer entries include the resolved `recipientLabel` so the model can prefer the label over the raw address in its response. System prompt updated to use this tool for past-action lookups.
+
+**`getRunway` chat tool + `computeRunway(db, { treasuryId, walletUsdc, kaminoUsdc, saveUsdc, jupiterUsdc?, windowDays })`.** New DB module `runway.ts`. Liquid balances are RPC reads — the chat tool fetches them via the existing protocol readers (Jupiter wrapped in `Promise.allSettled` for the same reason `getTreasurySnapshot` does), then hands the resolved numbers to `computeRunway`. The DB function sums executed `transfer` rows in the window (`status='executed'` AND `payload->>'kind'='transfer'`) and returns `{ totalLiquidUsdc, avgDailyOutflowUsdc, runwayMonths: number | null, windowDays, asOf }`. `runwayMonths === null` when there have been zero outflows in the window — explain this as "indefinite at current spend". Deposits and rebalances are excluded from outflow on purpose: they move USDC *within* the treasury, not out of it.
+
+**Why split balance fetching out of `computeRunway`.** Keeping the DB function pure lets us unit-test the runway math without a Solana connection, and avoids pulling `@solana/web3.js` into `@tc/db`'s dependency graph. The chat tool is the only caller today; future callers (e.g. an `/api/treasury/runway` web route) would replicate the same balance-fetch boilerplate.
+
+**Drive-by policy-route fix.** `apps/web/src/app/api/policy/route.ts` PATCH now chains `body → existing → DEFAULT_POLICY` for `maxSingleTransferUsdc` and `requireAddressBookForTransfers`. Previously `body → existing` only — which dropped to `undefined` on rows that pre-date the column (legacy policies) and got persisted as-is, surfacing as a failing pre-existing test on main. The route's intent (per the comment) was "fall back to DEFAULT_POLICY when missing"; the third link in the chain makes it true.
+
+**Verification.**
+- `/history` renders the last 50 actions; filter dropdowns refetch from page 1; "Load more" pages back via cursor; transfer rows show address-book labels.
+- Chat: "show me my last 10 transfers" → `getTransactionHistory({ kind: 'transfer', limit: 10 })` lists them with labels.
+- Chat: "what's my runway?" → `getRunway` returns months. Set `windowDays = 7` for a tight read on a treasury that's only sent a few recent transfers.
+- Chat: "can I afford a $50k transfer this month?" → model compares against `totalLiquidUsdc` AND describes the impact on `runwayMonths` (subtract X, divide by `avgDailyOutflow × 30`).
+
+**Out of scope (deferred).**
+- Date-range picker on `/history` (cursor pagination covers the use case).
+- CSV export.
+- Search by tx signature or recipient.
+- M4-4 scheduled outflows, M4-5 batched payouts.
+
 ## Architecture
 
 ### The trust boundary (security-critical)
