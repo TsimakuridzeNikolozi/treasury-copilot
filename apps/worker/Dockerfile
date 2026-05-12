@@ -19,7 +19,7 @@ FROM base AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=builder /repo/apps/worker/dist ./dist
-# @tc/* are bundled into dist/index.mjs via tsup noExternal — strip them from
+# @tc/* are bundled into dist/index.cjs via tsup noExternal — strip them from
 # package.json so pnpm only installs the four external runtime deps.
 COPY --from=builder /repo/apps/worker/package.json ./package.json
 RUN node -e "\
@@ -33,4 +33,4 @@ RUN node -e "\
 "
 RUN pnpm install --prod
 USER node
-CMD ["node", "dist/index.mjs"]
+CMD ["node", "dist/index.cjs"]

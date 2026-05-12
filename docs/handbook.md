@@ -514,9 +514,9 @@ If you provision Postgres inside Railway later (we don't, we use Neon), referenc
 `git push origin main` triggers a Railway build via the Dockerfile. The Dockerfile:
 
 1. Installs all workspace deps with pnpm.
-2. Builds `@tc/worker` with tsup (single ESM bundle).
+2. Builds `@tc/worker` with tsup (single CJS bundle).
 3. Uses `pnpm deploy --filter=@tc/worker --prod` to extract a minimal `node_modules` for the runtime stage.
-4. Runs `node dist/index.mjs` as the unprivileged `node` user.
+4. Runs `node dist/index.cjs` as the unprivileged `node` user.
 
 ### Logs and restart behavior
 
