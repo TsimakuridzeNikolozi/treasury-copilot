@@ -20,7 +20,15 @@ const config: NextConfig = {
     '@solana/web3.js',
     '@kamino-finance/klend-sdk',
     '@solendprotocol/solend-sdk',
+    '@solendprotocol/token2022-wrapper-sdk',
+    'qrcode-svg',
   ],
+  webpack(config) {
+    // @farcaster/mini-app-solana is an optional peer dep of @privy-io/react-auth
+    // that isn't installed — stub it out so webpack doesn't fail on the import.
+    config.resolve.alias['@farcaster/mini-app-solana'] = false;
+    return config;
+  },
   experimental: {
     typedEnv: true,
   },
