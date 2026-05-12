@@ -438,7 +438,7 @@ function CardHeader({
         </div>
         <p className="text-muted-foreground text-xs">{hint}</p>
       </div>
-      <ToggleSwitch checked={enabled} onChange={onToggle} label={label} />
+      <ToggleSwitch checked={enabled} onChange={onToggle} label={label} disabled={!wired} />
     </header>
   );
 }
@@ -449,10 +449,12 @@ function ToggleSwitch({
   checked,
   onChange,
   label,
+  disabled,
 }: {
   checked: boolean;
   onChange: (next: boolean) => void;
   label: string;
+  disabled?: boolean;
 }) {
   return (
     <button
@@ -460,11 +462,20 @@ function ToggleSwitch({
       role="switch"
       aria-checked={checked}
       aria-label={`Toggle ${label}`}
-      onClick={() => onChange(!checked)}
+      disabled={disabled}
+      onClick={() => {
+        if (disabled) return;
+        onChange(!checked);
+      }}
       className={cn(
-        'inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border transition-colors',
+        'inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-        checked ? 'border-primary bg-primary' : 'border-border bg-muted hover:bg-muted/80',
+        disabled
+          ? 'cursor-not-allowed border-border bg-muted opacity-50'
+          : cn(
+              'cursor-pointer',
+              checked ? 'border-primary bg-primary' : 'border-border bg-muted hover:bg-muted/80',
+            ),
       )}
     >
       <span

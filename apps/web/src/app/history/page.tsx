@@ -1,5 +1,5 @@
-import { AppNav } from '@/components/app-nav';
 import { HistoryTable } from '@/components/history-table';
+import { AppShell } from '@/components/shells/app-shell';
 import { db } from '@/lib/db';
 import { proposedActionRowToHistoryDto } from '@/lib/dto/history';
 import { bootstrapAuthAndTreasury } from '@/lib/server-page-auth';
@@ -45,9 +45,8 @@ export default async function HistoryPage() {
       : null;
 
   return (
-    <div className="flex min-h-screen flex-col bg-background">
-      <AppNav activeTreasuryId={treasury.id} />
-      <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-6 px-4 py-8 sm:px-6 sm:py-12">
+    <AppShell activeTreasuryId={treasury.id} breadcrumb="History" showBackToChat>
+      <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-8 sm:px-6 sm:py-10 lg:px-8">
         <header className="flex flex-col gap-1">
           <h1 className="font-semibold text-2xl tracking-tight">Transaction history</h1>
           <p className="text-muted-foreground text-sm">
@@ -61,7 +60,7 @@ export default async function HistoryPage() {
           treasuryId={treasury.id}
           pageSize={HISTORY_INITIAL_LIMIT}
         />
-      </main>
-    </div>
+      </div>
+    </AppShell>
   );
 }

@@ -42,6 +42,7 @@ export type ActionStatus = ProposedActionRow['status'];
 // same literal set and stay aligned with the query.
 export const WALLET_OUTFLOW_KINDS = ['deposit', 'transfer', 'rebalance'] as const;
 
+
 // Most recent successfully executed wallet outflow for the treasury. null
 // when the treasury has never executed one of the qualifying kinds
 // (fresh accounts, history-cleared dev DBs). Caller compares against

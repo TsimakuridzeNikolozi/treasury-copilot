@@ -96,7 +96,7 @@ export function TreasurySwitcher({ activeTreasuryId }: { activeTreasuryId?: stri
   };
 
   return (
-    <DropdownMenu>
+    <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
         <Button
           variant="outline"

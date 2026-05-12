@@ -18,8 +18,11 @@ import { useState } from 'react';
 
 const SUGGESTIONS: ReadonlyArray<{ title: string; prompt: string }> = [
   { title: 'Show my positions', prompt: 'Show my positions across all venues.' },
-  { title: 'Compare APYs', prompt: 'Compare the current supply APY for USDC on Kamino vs Save.' },
-  { title: 'Rebalance 0.5 USDC', prompt: 'Rebalance 0.5 USDC from Save to Kamino.' },
+  {
+    title: 'Compare APYs',
+    prompt: 'Compare the current supply APY for USDC on Kamino, Save, and Jupiter.',
+  },
+  { title: 'Rebalance 0.5 USDC', prompt: 'Rebalance 0.5 USDC from Save to Jupiter.' },
 ];
 
 export function StepReady() {

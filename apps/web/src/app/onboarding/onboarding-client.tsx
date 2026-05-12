@@ -1,11 +1,12 @@
 'use client';
 
-import { ProgressIndicator } from '@/components/onboarding/progress-indicator';
 import { StepFundWallet } from '@/components/onboarding/step-fund-wallet';
 import { StepGuardrails } from '@/components/onboarding/step-guardrails';
+import { StepIndicator } from '@/components/onboarding/step-indicator';
 import { StepReady } from '@/components/onboarding/step-ready';
 import { StepTelegram } from '@/components/onboarding/step-telegram';
 import { StepWelcomeCreate } from '@/components/onboarding/step-welcome-create';
+import { OnboardingShell } from '@/components/shells/onboarding-shell';
 import { usePrivy } from '@privy-io/react-auth';
 import { useState } from 'react';
 
@@ -20,24 +21,12 @@ export interface WizardTreasury {
 }
 
 type Step = 1 | 2 | 3 | 4 | 5;
-const TOTAL_STEPS = 5;
 
 interface Props {
   initialStep: Step;
   initialTreasury: WizardTreasury | null;
 }
 
-// M2 PR 5 / wizard state machine.
-//
-// Single URL `/onboarding` hosting an in-memory step pointer + treasury
-// reference. Each "Continue" / "Skip" CTA POSTs `/api/me/onboarding-step`
-// before advancing locally so refresh / cross-tab resume lands in the
-// right place. The POST is best-effort — if it fails the client still
-// advances; refresh would re-derive the saved step (one CTA behind, but
-// never corrupt). Step 5's "Open chat" CTA POSTs `/api/me/onboarded`
-// (sets onboarded_at) and `await`s the result — we *do* block here
-// because a failed call leaves the user bounceable back into the
-// wizard, which is more confusing than an inline retry.
 export function OnboardingClient({ initialStep, initialTreasury }: Props) {
   const [step, setStep] = useState<Step>(initialStep);
   const [treasury, setTreasury] = useState<WizardTreasury | null>(initialTreasury);
@@ -46,13 +35,9 @@ export function OnboardingClient({ initialStep, initialTreasury }: Props) {
   // Defense-in-depth: if the server thinks we're at step >1 but no
   // treasury exists (data drift, manual DB edit), fall back to step 1
   // so the user re-runs bootstrap. Idempotent — bootstrap returns
-  // created:false on existing memberships, so re-running step 1 is
-  // safe even after partial wizard progression.
+  // created:false on existing memberships, so re-running step 1 is safe.
   const effectiveStep: Step = step > 1 && !treasury ? 1 : step;
 
-  // Best-effort persistence. Errors swallowed (we'd rather let the user
-  // keep going than block them on a network blip; a stale onboarding_step
-  // just means refresh resumes one step behind).
   const persistStep = async (next: Step) => {
     try {
       const token = await getAccessToken();
@@ -65,7 +50,7 @@ export function OnboardingClient({ initialStep, initialTreasury }: Props) {
         body: JSON.stringify({ step: next }),
       });
     } catch {
-      // Non-fatal — ignore.
+      // Non-fatal — refresh resumes one step behind.
     }
   };
 
@@ -74,31 +59,40 @@ export function OnboardingClient({ initialStep, initialTreasury }: Props) {
     setStep(next);
   };
 
+  const jumpBack = (target: number) => {
+    if (target >= 1 && target < effectiveStep) {
+      const next = target as Step;
+      void persistStep(next);
+      setStep(next);
+    }
+  };
+
   return (
-    <main className="flex min-h-screen flex-col bg-background">
-      <header className="px-6 pt-12 pb-6 sm:pt-16">
-        <ProgressIndicator current={effectiveStep} total={TOTAL_STEPS} />
-      </header>
-      <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col px-6 pb-16">
-        {effectiveStep === 1 && (
-          <StepWelcomeCreate
-            onAdvance={(t) => {
-              setTreasury(t);
-              void advance(2);
-            }}
-          />
-        )}
-        {effectiveStep === 2 && treasury && (
-          <StepFundWallet treasury={treasury} onAdvance={() => void advance(3)} />
-        )}
-        {effectiveStep === 3 && treasury && (
-          <StepGuardrails treasury={treasury} onAdvance={() => void advance(4)} />
-        )}
-        {effectiveStep === 4 && treasury && (
-          <StepTelegram treasury={treasury} onAdvance={() => void advance(5)} />
-        )}
-        {effectiveStep === 5 && <StepReady />}
+    <OnboardingShell>
+      <div className="w-full max-w-[560px]">
+        <StepIndicator current={effectiveStep} onJump={jumpBack} />
+
+        <div className="mt-10">
+          {effectiveStep === 1 ? (
+            <StepWelcomeCreate
+              onAdvance={(t) => {
+                setTreasury(t);
+                void advance(2);
+              }}
+            />
+          ) : null}
+          {effectiveStep === 2 && treasury ? (
+            <StepFundWallet treasury={treasury} onAdvance={() => void advance(3)} />
+          ) : null}
+          {effectiveStep === 3 && treasury ? (
+            <StepGuardrails treasury={treasury} onAdvance={() => void advance(4)} />
+          ) : null}
+          {effectiveStep === 4 && treasury ? (
+            <StepTelegram treasury={treasury} onAdvance={() => void advance(5)} />
+          ) : null}
+          {effectiveStep === 5 ? <StepReady /> : null}
+        </div>
       </div>
-    </main>
+    </OnboardingShell>
   );
 }
