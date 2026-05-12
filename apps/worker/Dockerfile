@@ -13,14 +13,24 @@ COPY apps/worker ./apps/worker
 COPY packages ./packages
 RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @tc/worker build
-RUN pnpm deploy --filter=@tc/worker --prod /prod/worker
 
-# ---- runtime: minimal node + the deployed worker ----
-FROM node:22-alpine AS runtime
+# ---- runtime: minimal node + the worker bundle ----
+FROM base AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
-COPY --from=builder /prod/worker/dist ./dist
-COPY --from=builder /prod/worker/package.json ./package.json
-COPY --from=builder /prod/worker/node_modules ./node_modules
+COPY --from=builder /repo/apps/worker/dist ./dist
+# @tc/* are bundled into dist/index.js via tsup noExternal — strip them from
+# package.json so pnpm only installs the four external runtime deps.
+COPY --from=builder /repo/apps/worker/package.json ./package.json
+RUN node -e "\
+  const fs = require('fs'); \
+  const p = JSON.parse(fs.readFileSync('package.json', 'utf8')); \
+  p.dependencies = Object.fromEntries( \
+    Object.entries(p.dependencies || {}).filter(([k]) => !k.startsWith('@tc/')) \
+  ); \
+  delete p.devDependencies; \
+  fs.writeFileSync('package.json', JSON.stringify(p, null, 2)); \
+"
+RUN pnpm install --prod
 USER node
 CMD ["node", "dist/index.js"]
