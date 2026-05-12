@@ -33,4 +33,4 @@ RUN node -e "\
 "
 RUN pnpm install --prod
 USER node
-CMD ["node", "dist/index.js"]
+CMD ["node", "dist/index.mjs"]
