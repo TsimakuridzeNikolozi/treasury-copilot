@@ -11,4 +11,8 @@ export default defineConfig({
   shims: false,
   treeshake: true,
   noExternal: [/^@tc\//],
+  // CJS deps bundled into ESM output use dynamic require() — shim it.
+  banner: {
+    js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);",
+  },
 });
