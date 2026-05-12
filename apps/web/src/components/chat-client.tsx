@@ -80,6 +80,7 @@ export function ChatClient({
   const [errorDismissed, setErrorDismissed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [provider, setProvider] = useState<ModelProvider>('anthropic');
+  const [mounted, setMounted] = useState(false);
   const { getAccessToken } = usePrivy();
   const router = useRouter();
 
@@ -121,6 +122,8 @@ export function ChatClient({
   );
 
   const { messages, sendMessage, status, error } = useChat({ transport });
+
+  useEffect(() => { setMounted(true); }, []);
 
   // Refresh the server-rendered sidebar (snapshot + recent history) after
   // each AI turn finishes streaming. Triggers only on the 'ready'
@@ -183,14 +186,16 @@ export function ChatClient({
             <span className="truncate font-medium text-sm text-foreground">
               {conversationTitle}
             </span>
-            <Mono className="hidden whitespace-nowrap text-xs text-muted-foreground sm:inline">
-              ·{' '}
-              {new Date().toLocaleDateString('en-US', {
-                day: 'numeric',
-                month: 'short',
-                year: 'numeric',
-              })}
-            </Mono>
+            {mounted ? (
+              <Mono className="hidden whitespace-nowrap text-xs text-muted-foreground sm:inline">
+                ·{' '}
+                {new Date().toLocaleDateString('en-US', {
+                  day: 'numeric',
+                  month: 'short',
+                  year: 'numeric',
+                })}
+              </Mono>
+            ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
             <Select onValueChange={(v) => setProvider(v as ModelProvider)} value={provider}>

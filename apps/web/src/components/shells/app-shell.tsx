@@ -26,15 +26,16 @@ interface Props {
 // (history pagination, settings forms).
 export function AppShell({ activeTreasuryId, breadcrumb, showBackToChat, children }: Props) {
   return (
-    // min-h-screen (not min-h-full) so the wrapper has a clear height
-    // baseline on mobile — body has no explicit height, so min-h-full
-    // resolves to 0 and the sticky header's scroll context drifts.
-    // overflow-x-hidden traps any descendant horizontal overflow (e.g.
-    // a too-wide form, the section-nav's scrollable tab strip) so the
-    // page doesn't grow past the viewport — that was making the sticky
-    // header look narrower than the page on mobile.
-    <div className="flex min-h-screen w-full flex-col overflow-x-hidden bg-background">
-      <header className="sticky top-0 z-30 border-b bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+    // min-h-screen so the wrapper has a clear height baseline on mobile
+    // (body has no explicit height, so min-h-full resolves to 0).
+    // overflow-x-hidden is intentionally absent here: setting it would
+    // force overflow-y to auto (CSS spec), making this div a scroll
+    // container and intercepting position:sticky's scroll ancestor
+    // lookup before it can reach <html>/<body> where the viewport
+    // scroll actually lives. Horizontal overflow is already clipped at
+    // the body level via globals.css.
+    <div className="flex min-h-screen w-full flex-col bg-background">
+      <header className="sticky top-0 z-30 border-b bg-background/85 backdrop-blur supports-backdrop-filter:bg-background/60">
         <div className="flex h-14 items-center justify-between gap-3 px-4 sm:px-6 lg:px-8">
           <div className="flex min-w-0 items-center gap-2 sm:gap-3">
             <Link

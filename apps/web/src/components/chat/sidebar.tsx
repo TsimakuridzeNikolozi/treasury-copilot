@@ -86,6 +86,7 @@ export function ChatSidebar({
         // drawer that slides in from the left; the wrapper is always
         // mounted so React keeps focus across open/close transitions.
         aria-label="Treasury overview"
+        aria-modal={mobileOpen ? 'true' : undefined}
         className={cn(
           'fixed inset-y-0 left-0 z-40 flex h-full w-[280px] flex-col border-r bg-background transition-transform md:sticky md:top-0 md:translate-x-0',
           mobileOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0',
@@ -156,11 +157,7 @@ function PositionsBlock({
   positions,
   idleUsdc,
 }: {
-  positions: SidebarProps['snapshot'] extends infer S
-    ? S extends { positions: infer P }
-      ? P
-      : never
-    : never;
+  positions: SidebarSnapshot['positions'];
   idleUsdc: string;
 }) {
   const VENUE_LABEL: Record<string, string> = {

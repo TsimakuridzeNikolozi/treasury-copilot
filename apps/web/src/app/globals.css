@@ -98,22 +98,15 @@
   * {
     @apply border-border outline-ring/50;
   }
-  /* Reserve the scrollbar gutter at the html level — but only on devices
-     with a precision pointer (desktop). Why scoped: Radix locks body
-     scroll on dropdown open by adding `padding-right: <scrollbar-width>`
-     to <body>; on desktop our slim custom scrollbar combined with the
-     sticky header caused a ~10px jump on every open, which this
-     property fixes by reserving the gutter permanently. On touch
-     devices (mobile / tablet), browsers like Android Chrome still
-     respect `scrollbar-gutter: stable` even with overlay scrollbars,
-     producing a visible ~15px gap on the right edge of the viewport.
-     The desktop dropdown-shift problem doesn't apply on touch (no
-     classic scrollbar to lock), so we scope the rule to `pointer:fine`. */
-  @media (pointer: fine) {
-    html {
-      scrollbar-gutter: stable;
-    }
-  }
+  /* NOTE: scrollbar-gutter: stable must NOT be placed on <html>.
+     react-remove-scroll-bar (used by Radix dropdowns) computes the
+     scrollbar compensation as:
+       gap = window.innerWidth − document.documentElement.clientWidth
+     When scrollbar-gutter: stable is on <html>, clientWidth is permanently
+     narrowed by the gutter width — so gap is always non-zero and Radix
+     injects margin-right onto <body> on every dropdown open/close, causing
+     the layout shift. Without it, Radix's own compensation correctly
+     accounts for the classic scrollbar appearing/disappearing. */
   body {
     @apply bg-background text-foreground font-sans antialiased;
   }
