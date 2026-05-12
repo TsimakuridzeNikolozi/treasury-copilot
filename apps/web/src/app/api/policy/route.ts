@@ -54,15 +54,14 @@ const PolicyPatch = z
     message: 'requireApprovalAboveUsdc must be ≤ maxSingleActionUsdc',
     path: ['requireApprovalAboveUsdc'],
   })
-  // Same invariant for the transfer cap. When omitted from the body the
-  // effective cap falls back to DEFAULT_POLICY — validate against that same
-  // value so the check matches what the upsert will actually persist.
+  // Fast-path check for the transfer cap when the body supplies it. When
+  // maxSingleTransferUsdc is omitted the effective cap is
+  // `existing ?? DEFAULT_POLICY` — that value isn't known at parse time,
+  // so a second check runs below after loading the existing row.
   .refine(
     (p) =>
-      !gtAsDecimal(
-        p.requireApprovalAboveUsdc,
-        p.maxSingleTransferUsdc ?? DEFAULT_POLICY.maxSingleTransferUsdc,
-      ),
+      p.maxSingleTransferUsdc === undefined ||
+      !gtAsDecimal(p.requireApprovalAboveUsdc, p.maxSingleTransferUsdc),
     {
       message: 'requireApprovalAboveUsdc must be ≤ maxSingleTransferUsdc',
       path: ['requireApprovalAboveUsdc'],
@@ -121,6 +120,26 @@ export async function PATCH(req: Request) {
   // legacy client that doesn't know about requireAddressBookForTransfers
   // doesn't accidentally reset the row to its default.
   const existing = await getPolicy(db, resolved.treasury.id);
+
+  // Second invariant check for the transfer cap: when maxSingleTransferUsdc
+  // is omitted from the body, the effective cap is `existing ?? DEFAULT_POLICY`.
+  // The Zod refine above only fast-paths the case where the body provides it
+  // explicitly — this covers the omitted case against the value that will
+  // actually be persisted.
+  const effectiveTransferCap =
+    parsed.data.maxSingleTransferUsdc ??
+    existing.maxSingleTransferUsdc ??
+    DEFAULT_POLICY.maxSingleTransferUsdc;
+  if (gtAsDecimal(parsed.data.requireApprovalAboveUsdc, effectiveTransferCap)) {
+    return Response.json(
+      {
+        error: {
+          requireApprovalAboveUsdc: ['requireApprovalAboveUsdc must be ≤ maxSingleTransferUsdc'],
+        },
+      },
+      { status: 400 },
+    );
+  }
 
   await upsertPolicy(db, {
     treasuryId: resolved.treasury.id,

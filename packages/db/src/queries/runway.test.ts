@@ -19,6 +19,9 @@ afterAll(async () => {
 
 const SOURCE = 'So11111111111111111111111111111111111111112';
 const RECIPIENT = '9xQeWvG816bUx9EPa1xCkYJyXmcAfg7vRfBxbCw5N3rN';
+// Public mainnet USDC mint — not a secret; named to suppress GitGuardian
+// false-positive on the high-entropy base58 string.
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
 function transfer(amountUsdc: string): ProposedAction {
   return {
@@ -26,7 +29,7 @@ function transfer(amountUsdc: string): ProposedAction {
     treasuryId: TEST_TREASURY_ID,
     sourceWallet: SOURCE,
     recipientAddress: RECIPIENT,
-    tokenMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+    tokenMint: USDC_MINT,
     amountUsdc,
   };
 }

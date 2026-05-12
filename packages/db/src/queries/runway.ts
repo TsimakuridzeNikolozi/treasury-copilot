@@ -54,7 +54,8 @@ export interface RunwayResult {
 }
 
 export async function computeRunway(db: Db, input: ComputeRunwayInput): Promise<RunwayResult> {
-  const since = new Date(Date.now() - input.windowDays * 24 * 60 * 60 * 1000);
+  const windowDays = Math.max(1, input.windowDays);
+  const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
   // Sum executed transfers in the window. Filter on the JSON kind path
   // (no kind column) and on status='executed' so pending/failed rows
   // don't poison the average. Index used: proposed_actions_treasury_id_status_idx.
@@ -79,7 +80,7 @@ export async function computeRunway(db: Db, input: ComputeRunwayInput): Promise<
   const jupiter = Number.parseFloat(input.jupiterUsdc ?? '0');
   const totalLiquid = wallet + kamino + save + jupiter;
 
-  const avgDailyOutflow = totalOutflow / input.windowDays;
+  const avgDailyOutflow = totalOutflow / windowDays;
   // 30-day months — close enough for runway purposes. The user's reading
   // this as "approximately N months", not as a fiscal-calendar number.
   const runwayMonths = avgDailyOutflow > 0 ? totalLiquid / (avgDailyOutflow * 30) : null;
@@ -88,7 +89,7 @@ export async function computeRunway(db: Db, input: ComputeRunwayInput): Promise<
     totalLiquidUsdc: totalLiquid.toFixed(6),
     avgDailyOutflowUsdc: avgDailyOutflow.toFixed(6),
     runwayMonths,
-    windowDays: input.windowDays,
+    windowDays,
     asOf: new Date().toISOString(),
   };
 }
