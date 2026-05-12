@@ -2,6 +2,7 @@ import { type Db, createDb, schema } from '@tc/db';
 import { TEST_TREASURY_ID, ensureTestTreasury } from '@tc/db/test/treasury';
 import { TEST_DATABASE_URL } from '@tc/db/test/url';
 import { DEFAULT_POLICY, type Policy } from '@tc/policy';
+// DEFAULT_POLICY is re-imported for the M4-PR-2 gate-off test below.
 import type { ProposedAction, Venue } from '@tc/types';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import type { BalanceReader } from './balance';
@@ -212,10 +213,18 @@ describe.skipIf(SKIP)('proposeAction', () => {
   });
 
   describe('transfer kind (M4 PR 1 + 3)', () => {
+    // M4 PR 2: DEFAULT_POLICY now ships with
+    // requireAddressBookForTransfers=true, so every transfer test that
+    // doesn't specifically exercise the gate must seed the recipient
+    // into addressBookRecipients. Keeping the seed in one place at the
+    // test-suite layer mirrors the realistic chat-route flow.
+    const BOOK = new Set([RECIPIENT_A, RECIPIENT_B]);
+
     it('lands status=approved on a small transfer with sufficient wallet balance', async () => {
       const tightCtx: ProposeContext = {
         ...ctx,
         balanceReader: makeReader({ wallet: '1000' }),
+        addressBookRecipients: BOOK,
       };
       const { row, decision } = await proposeAction(db, transfer('100'), tightCtx);
       expect(decision.kind).toBe('allow');
@@ -230,6 +239,7 @@ describe.skipIf(SKIP)('proposeAction', () => {
       const tightCtx: ProposeContext = {
         ...ctx,
         balanceReader: makeReader({ wallet: '0.4' }),
+        addressBookRecipients: BOOK,
       };
       const { decision } = await proposeAction(db, transfer('10'), tightCtx);
       expect(decision.kind).toBe('deny');
@@ -244,6 +254,7 @@ describe.skipIf(SKIP)('proposeAction', () => {
       const tightCtx: ProposeContext = {
         ...ctx,
         balanceReader: makeReader({ wallet: '10000' }),
+        addressBookRecipients: BOOK,
       };
       const { row, decision } = await proposeAction(db, transfer('1500'), tightCtx);
       expect(decision.kind).toBe('requires_approval');
@@ -258,6 +269,7 @@ describe.skipIf(SKIP)('proposeAction', () => {
       const tightCtx: ProposeContext = {
         ...ctx,
         balanceReader: makeReader({ wallet: '10000' }),
+        addressBookRecipients: BOOK,
         preApprovedRecipients: new Set([RECIPIENT_A]),
       };
       const { row, decision } = await proposeAction(db, transfer('1500'), tightCtx);
@@ -269,6 +281,7 @@ describe.skipIf(SKIP)('proposeAction', () => {
       const tightCtx: ProposeContext = {
         ...ctx,
         balanceReader: makeReader({ wallet: '10000' }),
+        addressBookRecipients: BOOK,
         preApprovedRecipients: new Set([RECIPIENT_B]),
       };
       // Action targets RECIPIENT_A; pre-approved set has B. Should still
@@ -281,12 +294,69 @@ describe.skipIf(SKIP)('proposeAction', () => {
       const tightCtx: ProposeContext = {
         ...ctx,
         balanceReader: makeReader({ wallet: '1000' }),
+        addressBookRecipients: BOOK,
       };
       const { row } = await proposeAction(db, transfer('10', RECIPIENT_A, 'Q1 payroll'), tightCtx);
       // payload is the canonical jsonb the executor + signer read from.
       const payload = row.payload as { kind: string; memo?: string };
       expect(payload.kind).toBe('transfer');
       expect(payload.memo).toBe('Q1 payroll');
+    });
+  });
+
+  describe('transfer kind — requireAddressBookForTransfers gate (M4 PR 2)', () => {
+    // Regression guards for the safety gate's propose-layer wiring.
+    // Without ProposeContext.addressBookRecipients being threaded into
+    // EvaluateContext (the M4-PR-2 change to propose.ts), the chat route
+    // would still allow unknown recipients to slip through under the
+    // default-on gate.
+    it('denies a transfer to an UNKNOWN recipient when policy gate is on (default)', async () => {
+      const tightCtx: ProposeContext = {
+        ...ctx,
+        balanceReader: makeReader({ wallet: '10000' }),
+        addressBookRecipients: new Set([RECIPIENT_B]), // RECIPIENT_A NOT in book
+      };
+      const { row, decision } = await proposeAction(db, transfer('10', RECIPIENT_A), tightCtx);
+      expect(decision.kind).toBe('deny');
+      expect(row.status).toBe('denied');
+      if (decision.kind === 'deny') {
+        expect(decision.reason).toContain('address book');
+      }
+    });
+
+    it('allows a transfer to a KNOWN recipient when policy gate is on (default)', async () => {
+      const tightCtx: ProposeContext = {
+        ...ctx,
+        balanceReader: makeReader({ wallet: '10000' }),
+        addressBookRecipients: new Set([RECIPIENT_A]),
+      };
+      const { decision } = await proposeAction(db, transfer('10', RECIPIENT_A), tightCtx);
+      expect(decision.kind).toBe('allow');
+    });
+
+    it('allows a transfer to any address when the policy gate is OFF', async () => {
+      const tightCtx: ProposeContext = {
+        ...ctx,
+        balanceReader: makeReader({ wallet: '10000' }),
+        // addressBookRecipients intentionally omitted — and book is empty.
+      };
+      const { decision } = await proposeAction(db, transfer('10', RECIPIENT_A), tightCtx, {
+        ...DEFAULT_POLICY,
+        requireAddressBookForTransfers: false,
+      });
+      expect(decision.kind).toBe('allow');
+    });
+
+    it('fails closed when addressBookRecipients is omitted under the default gate', async () => {
+      // Defense in depth — a caller that forgets to fetch the set
+      // shouldn't accidentally turn the gate off. Empty book → every
+      // transfer denies under the default policy.
+      const tightCtx: ProposeContext = {
+        ...ctx,
+        balanceReader: makeReader({ wallet: '10000' }),
+      };
+      const { decision } = await proposeAction(db, transfer('10', RECIPIENT_A), tightCtx);
+      expect(decision.kind).toBe('deny');
     });
   });
 

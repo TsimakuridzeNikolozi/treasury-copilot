@@ -1,10 +1,12 @@
 export { createDb, type Db } from './client';
 export * as schema from './schema';
 export type {
+  AddressBookEntryRow,
   AlertSubscriptionRow,
   ApprovalRow,
   ApySnapshotRow,
   AuditLogRow,
+  NewAddressBookEntryRow,
   NewAlertSubscriptionRow,
   NewApprovalRow,
   NewApySnapshotRow,
@@ -22,6 +24,7 @@ export type {
   UserRow,
 } from './schema';
 export * from './queries/actions';
+export * from './queries/address-book';
 export * from './queries/alert-subscriptions';
 export * from './queries/apy';
 export * from './queries/memberships';

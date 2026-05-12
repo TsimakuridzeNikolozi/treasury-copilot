@@ -5,6 +5,7 @@ import { db } from '@/lib/db';
 import { verifyBearer } from '@/lib/privy';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { buildTools } from '@tc/agent-tools';
+import { getAddressBookRecipientSet, getPreApprovedRecipientSet } from '@tc/db';
 import { type UIMessage, convertToModelMessages, stepCountIs, streamText } from 'ai';
 import { z } from 'zod';
 
@@ -26,7 +27,12 @@ You have read tools and proposal tools.
 
 - For read intents ("show my positions", "what's my APY", "compare yields"), call \`getTreasurySnapshot\` and report the numbers. Render APYs as percentages with two decimals (e.g. 0.0523 → "5.23%").
 - For yield moves (deposit, withdraw, rebalance), use \`proposeDeposit\`, \`proposeWithdraw\`, or \`proposeRebalance\`.
-- For sending USDC to a third-party Solana address (payroll, vendor payment, settlement), use \`proposeTransfer\`. The recipient must be a literal base58 Solana address — there is no address book yet, so if the user says "send 100 to Acme" you must ask them for Acme's address rather than guessing. An optional on-chain \`memo\` (≤180 chars) can be attached; only include one when context naturally calls for it (invoice ref, payment id).
+- For sending USDC to a third-party Solana address (payroll, vendor payment, settlement), use \`proposeTransfer\`. The recipient passed to the tool MUST be a literal base58 Solana address (32–44 chars) — the schema rejects anything else.
+  - **By default the treasury blocks transfers to addresses NOT in the address book** (safety gate). Always call \`getAddressBook\` first when the user wants to send funds. If the recipient (whether named by label or by raw address) is not in the book, do NOT call \`proposeTransfer\` — the policy engine will deny it. Instead, ask the user to add the recipient at /settings → Address book and try again, OR (if the user prefers) to flip "Require address book for transfers" off in /settings → Policy.
+  - If the user names a recipient by label (e.g. "send 100 to Acme"), use \`getAddressBook\` to resolve the label to its base58 address, then call \`proposeTransfer\` with the resolved address. Confirm the label in your response so the user knows you found the right entry.
+  - Never hallucinate a base58 string for a label that isn't in the book — ask for the address (and offer the "add it first" workflow).
+  - Address-book entries with \`preApproved: true\` skip the human approval card for transfers above the treasury's requireApprovalAboveUsdc cap (the 24h velocity budget still applies).
+  - An optional on-chain \`memo\` (≤180 chars) can be attached; only include one when context naturally calls for it (invoice ref, payment id).
 - Never describe an action in prose without proposing it. Wallet addresses are configured server-side — do not ask the user for the source wallet and do not include it in tool input (it's not part of the input schema).
 - Before proposing a rebalance, ALWAYS call \`getTreasurySnapshot\` first so the user sees the supply + APY context that justifies the move.
 
@@ -90,6 +96,21 @@ export async function POST(req: Request) {
     ? provider
     : env.MODEL_PROVIDER;
 
+  // Fetch the two address-book-derived sets up front:
+  //   - addressBookRecipients: every entry. Drives the
+  //     requireAddressBookForTransfers safety gate (denies transfers to
+  //     unknown addresses when on).
+  //   - preApprovedRecipients: subset with pre_approved=true. Drives
+  //     the approval-bypass for transfers above requireApprovalAboveUsdc.
+  // Both threaded through buildTools → ProposeContext → evaluate.
+  // Two SELECTs per turn, run in parallel — cheap, and resolving here
+  // (vs. per-tool-call) keeps every proposed action in this chat turn
+  // consistent against a single read.
+  const [addressBookRecipients, preApprovedRecipients] = await Promise.all([
+    getAddressBookRecipientSet(db, resolved.treasury.id),
+    getPreApprovedRecipientSet(db, resolved.treasury.id),
+  ]);
+
   const result = streamText({
     model: modelFor(effectiveProvider),
     system: SYSTEM_PROMPT,
@@ -100,6 +121,8 @@ export async function POST(req: Request) {
       connection,
       treasuryAddress: new PublicKey(resolved.treasury.walletAddress),
       treasuryId: resolved.treasury.id,
+      addressBookRecipients,
+      preApprovedRecipients,
     }),
     // Allow the model to call a tool, observe the result, and respond — without
     // this the stream ends right after the first tool call.

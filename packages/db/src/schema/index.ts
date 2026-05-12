@@ -300,6 +300,21 @@ export const policies = pgTable('policies', {
     scale: 6,
   }).notNull(),
   allowedVenues: text('allowed_venues', { enum: VENUE_VALUES }).array().notNull(),
+  // M4 PR 2 — safety gate. When true, transfers (kind='transfer') to a
+  // recipient NOT in the treasury's address book are DENIED by the policy
+  // engine. The deny is actionable: the user adds the recipient at
+  // /settings → Address book first, then re-tries. Default true ships
+  // the safer behavior to new and existing rows alike (the 0015 migration
+  // adds the column with NOT NULL DEFAULT true).
+  //
+  // Why this matters: the chat agent has no write tool for the address
+  // book by design. With this on, a prompt-injection that tries to send
+  // to an attacker-controlled address cannot succeed — the model can't
+  // also inject "first, add this address to my address book" because
+  // there's no tool for it.
+  requireAddressBookForTransfers: boolean('require_address_book_for_transfers')
+    .notNull()
+    .default(true),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   updatedBy: text('updated_by'),
 });
@@ -524,6 +539,73 @@ export const alertSubscriptionsRelations = relations(alertSubscriptions, ({ one 
   }),
 }));
 
+// M4 PR 2 — per-treasury address book. Stores named recipients so
+// transfers can be proposed by label ("send 100 to Acme") in chat AND
+// pre-approved recipients can bypass the approval gate for over-threshold
+// transfers (the velocity cap still applies).
+//
+// Two unique constraints on the same parent column:
+//   (treasury_id, recipient_address) — one entry per recipient. Editing
+//      changes the label/notes/pre_approved flag in place; the address
+//      itself is immutable post-create (a new address = a new entry).
+//   (treasury_id, label) — labels are human pointers and must be
+//      disambiguable inside a treasury, otherwise the chat "send 100
+//      to Acme" resolution is ambiguous.
+//
+// `token_mint` defaults to USDC mainnet — the only mint the signer
+// accepts today. Kept as a column (not implied) so multi-asset support
+// later is a server-side gate, not a schema change.
+//
+// `pre_approved=false` is the safe default: an entry exists for
+// auditability / label resolution alone, and only flips on with an
+// explicit owner action. The policy bypass is enforced in
+// @tc/policy.evaluate via the `preApprovedRecipients` context field.
+export const addressBookEntries = pgTable(
+  'address_book_entries',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    // ON DELETE cascade: a deleted treasury takes its address book with
+    // it. Entries are configuration, not history (audit_logs is the
+    // history) — mirror policies / alert_subscriptions' cascade reasoning.
+    treasuryId: uuid('treasury_id')
+      .references(() => treasuries.id, { onDelete: 'cascade' })
+      .notNull(),
+    label: text('label').notNull(),
+    recipientAddress: text('recipient_address').notNull(),
+    // Defaults to USDC mainnet. Hardcoded into the column DEFAULT so a
+    // hand-rolled INSERT (admin/SQL) without an explicit mint still
+    // produces a valid row.
+    tokenMint: text('token_mint').notNull().default('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'),
+    notes: text('notes'),
+    preApproved: boolean('pre_approved').notNull().default(false),
+    // Privy DID of the creator. Nullable so a future operator-seeded
+    // entry (e.g. a system-onboarding default) doesn't have to fabricate
+    // an actor — same shape as audit_logs.actor accepts.
+    createdBy: text('created_by'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    // List/render order is most-recent-first; (treasury, created_at desc)
+    // serves the /settings table without a sort step.
+    index('address_book_entries_treasury_id_created_at_idx').on(t.treasuryId, t.createdAt),
+    // Per-treasury uniqueness on address and label. Two separate unique
+    // indexes (not a composite) so the violation surface is precise — a
+    // duplicate-address attempt fails on the address index, a duplicate
+    // label on the label index, and the API surfaces the right field
+    // error.
+    uniqueIndex('address_book_entries_treasury_address_uq').on(t.treasuryId, t.recipientAddress),
+    uniqueIndex('address_book_entries_treasury_label_uq').on(t.treasuryId, t.label),
+  ],
+);
+
+export const addressBookEntriesRelations = relations(addressBookEntries, ({ one }) => ({
+  treasury: one(treasuries, {
+    fields: [addressBookEntries.treasuryId],
+    references: [treasuries.id],
+  }),
+}));
+
 export type ProposedActionRow = typeof proposedActions.$inferSelect;
 export type NewProposedActionRow = typeof proposedActions.$inferInsert;
 export type ApprovalRow = typeof approvals.$inferSelect;
@@ -544,3 +626,5 @@ export type ApySnapshotRow = typeof apySnapshots.$inferSelect;
 export type NewApySnapshotRow = typeof apySnapshots.$inferInsert;
 export type AlertSubscriptionRow = typeof alertSubscriptions.$inferSelect;
 export type NewAlertSubscriptionRow = typeof alertSubscriptions.$inferInsert;
+export type AddressBookEntryRow = typeof addressBookEntries.$inferSelect;
+export type NewAddressBookEntryRow = typeof addressBookEntries.$inferInsert;

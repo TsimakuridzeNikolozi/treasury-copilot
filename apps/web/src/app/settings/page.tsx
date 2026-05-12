@@ -1,3 +1,4 @@
+import { AddressBookTable } from '@/components/address-book-table';
 import {
   type AlertSubscriptionDto,
   AlertSubscriptionsForm,
@@ -7,6 +8,7 @@ import { PolicyForm } from '@/components/policy-form';
 import { TelegramConfigForm } from '@/components/telegram-config-form';
 import { WalletAddressBlock } from '@/components/wallet-address-block';
 import { db } from '@/lib/db';
+import { addressBookEntryRowToDto } from '@/lib/dto/address-book';
 import { bootstrapAuthAndTreasury } from '@/lib/server-page-auth';
 import {
   type AlertKind,
@@ -15,6 +17,7 @@ import {
   ensureSubscriptionsForTreasury,
   getPolicy,
   getPolicyMeta,
+  listAddressBookEntries,
   listSubscriptions,
 } from '@tc/db';
 
@@ -30,11 +33,13 @@ export default async function SettingsPage() {
   // covers fresh treasuries provisioned after migration 0010 ran).
   await ensureSubscriptionsForTreasury(db, treasury.id);
 
-  const [policy, meta, alertRows] = await Promise.all([
+  const [policy, meta, alertRows, addressBookRows] = await Promise.all([
     getPolicy(db, treasury.id),
     getPolicyMeta(db, treasury.id),
     listSubscriptions(db, treasury.id),
+    listAddressBookEntries(db, treasury.id),
   ]);
+  const addressBookEntries = addressBookRows.map(addressBookEntryRowToDto);
 
   // Marshal to the client DTO shape — defaults filled in here so the
   // form always renders meaningful baseline thresholds for yield_drift.
@@ -117,6 +122,20 @@ export default async function SettingsPage() {
             </p>
           </div>
           <AlertSubscriptionsForm initial={alertDtos} treasuryId={treasury.id} />
+        </section>
+
+        <section className="flex flex-col gap-3">
+          <div>
+            <h2 className="font-semibold text-lg tracking-tight">Address book</h2>
+            <p className="text-muted-foreground text-sm">
+              Named recipients for outbound USDC transfers. Pre-approved recipients skip the
+              approval card for transfers above your{' '}
+              <span className="font-mono">requireApprovalAboveUsdc</span> cap — the 24h velocity
+              budget still applies. Labels are visible to chat ("send 100 to Acme") and on approval
+              cards.
+            </p>
+          </div>
+          <AddressBookTable initial={addressBookEntries} treasuryId={treasury.id} />
         </section>
       </main>
     </div>

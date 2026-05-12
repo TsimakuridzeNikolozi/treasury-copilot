@@ -52,6 +52,7 @@ export async function getPolicy(db: Db, treasuryId: string): Promise<Policy> {
     maxSingleTransferUsdc: row.maxSingleTransferUsdc,
     maxAutoApprovedUsdcPer24h: row.maxAutoApprovedUsdcPer24h,
     allowedVenues: narrowVenues(row.allowedVenues),
+    requireAddressBookForTransfers: row.requireAddressBookForTransfers,
   };
 }
 
@@ -102,6 +103,7 @@ export async function upsertPolicy(db: Db, input: UpsertPolicyInput): Promise<vo
         maxSingleTransferUsdc: input.policy.maxSingleTransferUsdc,
         maxAutoApprovedUsdcPer24h: input.policy.maxAutoApprovedUsdcPer24h,
         allowedVenues: input.policy.allowedVenues as Venue[],
+        requireAddressBookForTransfers: input.policy.requireAddressBookForTransfers,
         updatedBy: input.updatedBy,
         updatedAt: now,
       })
@@ -113,6 +115,7 @@ export async function upsertPolicy(db: Db, input: UpsertPolicyInput): Promise<vo
           maxSingleTransferUsdc: input.policy.maxSingleTransferUsdc,
           maxAutoApprovedUsdcPer24h: input.policy.maxAutoApprovedUsdcPer24h,
           allowedVenues: input.policy.allowedVenues as Venue[],
+          requireAddressBookForTransfers: input.policy.requireAddressBookForTransfers,
           updatedBy: input.updatedBy,
           updatedAt: now,
         },
@@ -130,6 +133,7 @@ export async function upsertPolicy(db: Db, input: UpsertPolicyInput): Promise<vo
               maxSingleTransferUsdc: before.maxSingleTransferUsdc,
               maxAutoApprovedUsdcPer24h: before.maxAutoApprovedUsdcPer24h,
               allowedVenues: before.allowedVenues,
+              requireAddressBookForTransfers: before.requireAddressBookForTransfers,
             }
           : null,
         after: input.policy,

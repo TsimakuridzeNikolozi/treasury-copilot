@@ -13,6 +13,16 @@ export interface Policy {
   maxSingleTransferUsdc: string;
   maxAutoApprovedUsdcPer24h: string;
   allowedVenues: readonly Venue[];
+  // M4 PR 2 — safety gate. When true, transfers to addresses NOT in the
+  // treasury's address book are denied outright. Pre-approval (the
+  // approval-bypass flag) is a strict subset — every pre-approved
+  // recipient is in the book by data invariant, so this gate fires only
+  // for raw, never-added addresses. Default true (DEFAULT_POLICY): the
+  // safer behavior ships by default, given the chat agent has NO write
+  // tool for the address book (a prompt-injection cannot satisfy this
+  // gate). Operators who explicitly want the previous "send to any
+  // base58" workflow flip the toggle off in /settings → Policy.
+  requireAddressBookForTransfers: boolean;
 }
 
 // Drift / Marginfi are intentionally not allowlisted yet — phase 1 step 2E.
@@ -30,6 +40,10 @@ export const DEFAULT_POLICY: Policy = {
   maxSingleTransferUsdc: '10000',
   maxAutoApprovedUsdcPer24h: '5000',
   allowedVenues: ['kamino', 'save', 'jupiter'],
+  // Safer default: transfers must go to a known recipient. Pairs with
+  // the chat agent's no-write-to-address-book design — together they
+  // close the prompt-injection exfiltration path.
+  requireAddressBookForTransfers: true,
 };
 
 export interface EvaluateContext {
@@ -37,6 +51,15 @@ export interface EvaluateContext {
   // Pre-approved recipients (address book, M4-2). For transfers, bypasses the
   // human-approval gate but not the 24h velocity cap. Other kinds ignore it.
   preApprovedRecipients?: ReadonlySet<string>;
+  // All address-book entries for the treasury (a superset of
+  // preApprovedRecipients). Used by the requireAddressBookForTransfers
+  // gate. Pre-approval status doesn't matter here — only membership.
+  // Omitting the field treats the gate as if the book is empty (every
+  // transfer is rejected when the policy flag is true), which is the
+  // intended fail-closed behavior — callers that want the previous
+  // "send to any base58" semantics flip the policy flag off, not omit
+  // the set.
+  addressBookRecipients?: ReadonlySet<string>;
 }
 
 export function actionVenues(action: ProposedAction): readonly Venue[] {
@@ -72,6 +95,21 @@ export function evaluate(
   const amount = new Decimal(action.amountUsdc);
   if (amount.lte(0)) {
     return { kind: 'deny', reason: 'amount must be positive' };
+  }
+
+  // M4 PR 2 — address-book gate for transfers. Fires BEFORE the amount-cap
+  // and approval-threshold checks so a recipient mistake denies on the
+  // most actionable reason (the user adds the address, then re-tries
+  // with the same amount). Placing this after amount-positive keeps the
+  // amount=0 case its own deny reason.
+  if (action.kind === 'transfer' && policy.requireAddressBookForTransfers) {
+    const book = context.addressBookRecipients ?? new Set<string>();
+    if (!book.has(action.recipientAddress)) {
+      return {
+        kind: 'deny',
+        reason: `recipient ${action.recipientAddress} is not in this treasury's address book; add it at /settings → Address book first (or disable requireAddressBookForTransfers in /settings → Policy)`,
+      };
+    }
   }
 
   // Transfers get their own ceiling so payroll-sized outflows don't force

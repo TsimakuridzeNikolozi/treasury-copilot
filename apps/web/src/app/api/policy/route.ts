@@ -37,6 +37,11 @@ const PolicyPatch = z
     maxSingleTransferUsdc: decimalUsdc.optional(),
     maxAutoApprovedUsdcPer24h: decimalUsdc,
     allowedVenues: z.array(venue).min(1, 'must allow at least one venue'),
+    // M4 PR 2 — address-book safety gate. Optional for forward-compat
+    // with older clients; the DB column is NOT NULL with TRUE default,
+    // and an undefined here preserves the row's existing value via the
+    // read-existing-then-merge path below.
+    requireAddressBookForTransfers: z.boolean().optional(),
     // Body-vs-cookie 409 contract for PATCH: client sends the treasuryId
     // it intended to write to; we reject if the active cookie has moved.
     treasuryId: z.string().uuid(),
@@ -112,16 +117,24 @@ export async function PATCH(req: Request) {
     return Response.json({ error: 'active_treasury_changed' }, { status: 409 });
   }
 
+  // Read existing for fields the form may not have submitted so a
+  // legacy client that doesn't know about requireAddressBookForTransfers
+  // doesn't accidentally reset the row to its default.
+  const existing = await getPolicy(db, resolved.treasury.id);
+
   await upsertPolicy(db, {
     treasuryId: resolved.treasury.id,
     policy: {
       requireApprovalAboveUsdc: parsed.data.requireApprovalAboveUsdc,
       maxSingleActionUsdc: parsed.data.maxSingleActionUsdc,
-      // Falls back to DEFAULT_POLICY when the body omits this field (current
-      // policy editor has no UI for it). Callers that do supply it win.
-      maxSingleTransferUsdc: parsed.data.maxSingleTransferUsdc ?? DEFAULT_POLICY.maxSingleTransferUsdc,
+      // Falls back to the existing DB value when the body omits this field
+      // (current policy editor has no UI for it). Callers that do supply it win.
+      maxSingleTransferUsdc:
+        parsed.data.maxSingleTransferUsdc ?? existing.maxSingleTransferUsdc,
       maxAutoApprovedUsdcPer24h: parsed.data.maxAutoApprovedUsdcPer24h,
       allowedVenues: parsed.data.allowedVenues,
+      requireAddressBookForTransfers:
+        parsed.data.requireAddressBookForTransfers ?? existing.requireAddressBookForTransfers,
     },
     updatedBy: auth.userId,
   });

@@ -3,6 +3,7 @@ import {
   type ProposedActionRow,
   TransitionConflictError,
   getActionById,
+  getAddressBookEntryByAddress,
   getTreasuryForRouting,
   recordApproval,
 } from '@tc/db';
@@ -91,9 +92,16 @@ bot.callbackQuery(
         ...(ctx.from?.username ? { meta: { username: ctx.from.username } } : {}),
       });
 
-      await ctx.editMessageText(formatResolved(updated, decision, ctx.from?.username, approverId), {
-        parse_mode: 'HTML',
-      });
+      // Resolve the recipient label for transfer rows at edit time — the
+      // approver may have added or renamed the address-book entry between
+      // post and click. Non-transfer rows skip the lookup entirely.
+      const recipientLabel = await resolveRecipientLabel(updated);
+      await ctx.editMessageText(
+        formatResolved(updated, decision, ctx.from?.username, approverId, recipientLabel),
+        {
+          parse_mode: 'HTML',
+        },
+      );
     } catch (err) {
       if (err instanceof TransitionConflictError) {
         // A peer approver beat us to it (or the row vanished). Reflect the
@@ -141,7 +149,15 @@ function shortAddr(addr: string): string {
   return addr.length <= 16 ? addr : `${addr.slice(0, 6)}…${addr.slice(-6)}`;
 }
 
-function summaryLine(action: ProposedActionRow['payload']): string {
+function summaryLine(
+  action: ProposedActionRow['payload'],
+  // M4 PR 2 — pre-resolved recipient label from the address book.
+  // Threaded through from the async callers (postApprovalCard /
+  // editApprovalCardWithExecution / callback handler) because
+  // summaryLine itself stays sync. Null means no entry matched at
+  // resolve time — the card falls back to truncated address only.
+  recipientLabel: string | null = null,
+): string {
   switch (action.kind) {
     case 'deposit':
       return `<b>Deposit</b> ${action.amountUsdc} USDC → ${escapeHtml(action.venue)}`;
@@ -156,14 +172,19 @@ function summaryLine(action: ProposedActionRow['payload']): string {
         `<i>wallet</i> <code>${escapeHtml(action.wallet)}</code>`,
       ].join('\n');
     case 'transfer': {
-      // M4 PR 1 — transfer card. Includes the source wallet line
+      // M4 PR 1+2 — transfer card. Includes the source wallet line
       // (mirrors rebalance) — transfer is the highest-risk action type
       // (arbitrary outflow to a third-party address), and the approver
       // needs to see which wallet they're authorising a debit from
-      // before clicking approve. The recipient is truncated by shortAddr;
-      // full address-book label resolution lands with M4-2.
+      // before clicking approve. When the recipient matches an
+      // address-book entry, prepend the label so the approver gets a
+      // human pointer; the full base58 stays on the next line for
+      // auditability either way.
+      const headHeader = recipientLabel
+        ? `<b>Transfer</b> ${action.amountUsdc} USDC → ${escapeHtml(recipientLabel)} <code>${escapeHtml(shortAddr(action.recipientAddress))}</code>`
+        : `<b>Transfer</b> ${action.amountUsdc} USDC → <code>${escapeHtml(shortAddr(action.recipientAddress))}</code>`;
       const lines = [
-        `<b>Transfer</b> ${action.amountUsdc} USDC → <code>${escapeHtml(shortAddr(action.recipientAddress))}</code>`,
+        headHeader,
         `<i>to</i> <code>${escapeHtml(action.recipientAddress)}</code>`,
         `<i>wallet</i> <code>${escapeHtml(action.sourceWallet)}</code>`,
       ];
@@ -175,13 +196,40 @@ function summaryLine(action: ProposedActionRow['payload']): string {
   }
 }
 
-export function formatPending(row: ProposedActionRow): string {
+// Look up the address-book label for a transfer row's recipient. Returns
+// null when (a) the row is not a transfer, or (b) no matching address-book
+// entry exists at the time of resolution. The lookup hits the latest
+// state every time (we don't snapshot label onto the action payload),
+// which is intentional: if the owner renames an entry between post and
+// edit, the card surfaces the latest label.
+async function resolveRecipientLabel(row: ProposedActionRow): Promise<string | null> {
+  if (row.payload.kind !== 'transfer') return null;
+  try {
+    const entry = await getAddressBookEntryByAddress(
+      db,
+      row.treasuryId,
+      row.payload.recipientAddress,
+    );
+    return entry?.label ?? null;
+  } catch (err) {
+    // Lookup is a UX nicety, not a correctness boundary. If the read
+    // fails (transient DB hiccup), fall back to the labeless card
+    // rather than block the approval flow on it.
+    console.warn('[bot] address-book label resolution failed:', err);
+    return null;
+  }
+}
+
+export function formatPending(
+  row: ProposedActionRow,
+  recipientLabel: string | null = null,
+): string {
   const reason =
     row.policyDecision?.kind === 'requires_approval'
       ? row.policyDecision.reason
       : 'awaiting approval';
   return [
-    summaryLine(row.payload),
+    summaryLine(row.payload, recipientLabel),
     `<i>Reason: ${escapeHtml(reason)}</i>`,
     `<code>${row.id}</code>`,
   ].join('\n');
@@ -192,10 +240,16 @@ function formatResolved(
   decision: 'approve' | 'deny',
   username: string | undefined,
   approverId: number,
+  recipientLabel: string | null = null,
 ): string {
   const verb = decision === 'approve' ? '✅ <b>Approved</b>' : '❌ <b>Denied</b>';
   const who = username ? `@${escapeHtml(username)}` : `id ${approverId}`;
-  return [summaryLine(row.payload), `<code>${row.id}</code>`, '', `${verb} by ${who}`].join('\n');
+  return [
+    summaryLine(row.payload, recipientLabel),
+    `<code>${row.id}</code>`,
+    '',
+    `${verb} by ${who}`,
+  ].join('\n');
 }
 
 function formatAttribution(attribution: ApprovalAttribution | null): string {
@@ -214,8 +268,9 @@ function formatExecuted(
   row: ProposedActionRow,
   result: TerminalExecuteResult,
   attribution: ApprovalAttribution | null,
+  recipientLabel: string | null = null,
 ): string {
-  const lines = [summaryLine(row.payload), `<code>${row.id}</code>`, ''];
+  const lines = [summaryLine(row.payload, recipientLabel), `<code>${row.id}</code>`, ''];
   lines.push(`✅ <b>Approved</b> by ${formatAttribution(attribution)}`);
   if (result.kind === 'success') {
     lines.push(`⛓️ <b>Executed</b> <code>${escapeHtml(result.txSignature)}</code>`);
@@ -260,7 +315,12 @@ export async function postApprovalCard(
     .text('✅ Approve', `approve:${row.id}`)
     .text('❌ Deny', `deny:${row.id}`);
 
-  const msg = await bot.api.sendMessage(chatId, formatPending(row), {
+  // M4 PR 2 — resolve the address-book label (transfer rows only) before
+  // formatting so the approver sees "Acme Corp" alongside the truncated
+  // address. Non-transfer rows return null instantly; failures fall back
+  // to a labeless card.
+  const recipientLabel = await resolveRecipientLabel(row);
+  const msg = await bot.api.sendMessage(chatId, formatPending(row, recipientLabel), {
     parse_mode: 'HTML',
     reply_markup: keyboard,
   });
@@ -301,10 +361,16 @@ export async function editApprovalCardWithExecution(
   // Use the snapshotted chat id (PR 3): the row carries the chat the message
   // was originally posted to, so an owner reconfiguring the treasury's
   // chat_id mid-flight doesn't break this edit.
+  //
+  // M4 PR 2 — re-resolve the address-book label at edit time. Labels are
+  // not snapshotted onto the action payload (the address is), so a rename
+  // between post and edit surfaces the latest. Same fallback semantics as
+  // postApprovalCard.
+  const recipientLabel = await resolveRecipientLabel(row);
   await bot.api.editMessageText(
     row.telegramChatId,
     row.telegramMessageId,
-    formatExecuted(row, result, attribution),
+    formatExecuted(row, result, attribution, recipientLabel),
     { parse_mode: 'HTML' },
   );
 }

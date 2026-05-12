@@ -24,6 +24,10 @@ const TIGHTER: Policy = {
   maxSingleTransferUsdc: '20000',
   maxAutoApprovedUsdcPer24h: '2000',
   allowedVenues: ['kamino'],
+  // M4 PR 2 — the new safety gate. TIGHTER keeps it on (matches DEFAULT_POLICY)
+  // so the existing tests exercise the realistic default. The toggle-off path
+  // is covered by its own test below.
+  requireAddressBookForTransfers: true,
 };
 
 describe.skipIf(SKIP)('queries/policies', () => {
@@ -51,6 +55,18 @@ describe.skipIf(SKIP)('queries/policies', () => {
       // M4 PR 1 — read-side round-trip for the new transfer cap.
       expect(policy.maxSingleTransferUsdc).toBe('20000.000000');
       expect(policy.allowedVenues).toEqual(['kamino']);
+      // M4 PR 2 — read-side round-trip for the safety gate flag.
+      expect(policy.requireAddressBookForTransfers).toBe(true);
+    });
+
+    it('round-trips requireAddressBookForTransfers=false (opt-out path)', async () => {
+      await upsertPolicy(db, {
+        treasuryId: TEST_TREASURY_ID,
+        policy: { ...TIGHTER, requireAddressBookForTransfers: false },
+        updatedBy: 'did:privy:test',
+      });
+      const policy = await getPolicy(db, TEST_TREASURY_ID);
+      expect(policy.requireAddressBookForTransfers).toBe(false);
     });
   });
 

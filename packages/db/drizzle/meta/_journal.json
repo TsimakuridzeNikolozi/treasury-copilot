@@ -99,6 +99,20 @@
       "when": 1779400000001,
       "tag": "0013_policy_max_single_transfer_usdc",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1779500000000,
+      "tag": "0014_address_book",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1779500000001,
+      "tag": "0015_policy_require_address_book_for_transfers",
+      "breakpoints": true
     }
   ]
 }
