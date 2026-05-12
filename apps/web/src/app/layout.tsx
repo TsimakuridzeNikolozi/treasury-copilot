@@ -1,4 +1,5 @@
 import { PrivyProvider } from '@/components/privy-provider';
+import { ThemeProvider } from '@/components/theme-provider';
 import type { Metadata, Viewport } from 'next';
 import { JetBrains_Mono, Manrope } from 'next/font/google';
 import './globals.css';
@@ -33,7 +34,14 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="en" className={`${sans.variable} ${mono.variable}`} suppressHydrationWarning>
       <body>
-        <PrivyProvider>{children}</PrivyProvider>
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="system"
+          enableSystem
+          disableTransitionOnChange
+        >
+          <PrivyProvider>{children}</PrivyProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

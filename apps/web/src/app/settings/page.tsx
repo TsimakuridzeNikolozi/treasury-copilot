@@ -3,9 +3,11 @@ import {
   type AlertSubscriptionDto,
   AlertSubscriptionsForm,
 } from '@/components/alert-subscriptions-form';
-import { AppNav } from '@/components/app-nav';
 import { PolicyForm } from '@/components/policy-form';
+import { SettingsSectionNav } from '@/components/settings/section-nav';
+import { AppShell } from '@/components/shells/app-shell';
 import { TelegramConfigForm } from '@/components/telegram-config-form';
+import { SectionLabel } from '@/components/ui/section-label';
 import { WalletAddressBlock } from '@/components/wallet-address-block';
 import { db } from '@/lib/db';
 import { addressBookEntryRowToDto } from '@/lib/dto/address-book';
@@ -23,8 +25,16 @@ import {
 
 // postgres-js needs Node APIs not available in the Edge runtime.
 export const runtime = 'nodejs';
-// Same as /chat: per-user policy must not be statically prerendered.
+// Per-user policy must not be statically prerendered.
 export const dynamic = 'force-dynamic';
+
+const SECTIONS = [
+  { id: 'wallet', label: 'Wallet' },
+  { id: 'policy', label: 'Policy' },
+  { id: 'telegram', label: 'Telegram' },
+  { id: 'alerts', label: 'Alerts' },
+  { id: 'address-book', label: 'Address book' },
+] as const;
 
 export default async function SettingsPage() {
   const { treasury } = await bootstrapAuthAndTreasury('/settings');
@@ -41,8 +51,6 @@ export default async function SettingsPage() {
   ]);
   const addressBookEntries = addressBookRows.map(addressBookEntryRowToDto);
 
-  // Marshal to the client DTO shape — defaults filled in here so the
-  // form always renders meaningful baseline thresholds for yield_drift.
   const alertDtos: AlertSubscriptionDto[] = alertRows.map((r) => {
     const kind = r.kind as AlertKind;
     const cfg = (r.config ?? {}) as Record<string, unknown>;
@@ -60,84 +68,114 @@ export default async function SettingsPage() {
       updatedBy: r.updatedBy ?? null,
     };
   });
-  // RSC → client serialization: Date works through Flight, but ISO strings
-  // are easier for the form to format predictably and don't require dealing
-  // with timezone surprises on rehydration.
   const formMeta = {
     updatedAtIso: meta.updatedAt ? meta.updatedAt.toISOString() : null,
     updatedBy: meta.updatedBy,
   };
 
   return (
-    <div className="flex min-h-screen flex-col bg-background">
-      <AppNav activeTreasuryId={treasury.id} />
-      <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-8 px-4 py-8 sm:px-6 sm:py-12">
-        <header className="flex flex-col gap-3">
-          <div className="flex flex-col gap-1">
-            <h1 className="font-semibold text-2xl tracking-tight">Settings</h1>
-            <p className="text-muted-foreground text-xs">
-              Treasury: <span className="font-mono">{treasury.name}</span>
-            </p>
-          </div>
-          <WalletAddressBlock
-            address={treasury.walletAddress}
-            signerBackend={treasury.signerBackend}
-          />
-        </header>
+    <AppShell activeTreasuryId={treasury.id} breadcrumb="Settings">
+      {/*
+        Mobile nav lives here — outside the padded container — so it is
+        naturally full-viewport-width without negative margins. Negative
+        margins inside a grid track cause page-level horizontal overflow
+        on mobile Safari even when `overflow-x: hidden` is set on html/body.
+        Hidden on desktop (lg:hidden); the desktop version renders inside
+        the grid left column below.
+      */}
+      <div className="lg:hidden">
+        <SettingsSectionNav sections={SECTIONS} />
+      </div>
 
-        <section className="flex flex-col gap-3">
-          <div>
-            <h2 className="font-semibold text-lg tracking-tight">Policy</h2>
-            <p className="text-muted-foreground text-sm">
-              Caps and venue allowlist applied at proposal time. Changes take effect on the next
-              proposed action — in-flight executions use the policy frozen at proposal time.
-            </p>
-          </div>
-          <PolicyForm initial={policy} meta={formMeta} treasuryId={treasury.id} />
-        </section>
+      <div className="mx-auto w-full max-w-[940px] px-4 py-8 sm:px-6 sm:py-10 lg:px-8">
+        <div className="mb-8 flex flex-col gap-1">
+          <h1 className="font-semibold text-2xl tracking-tight">Settings</h1>
+          <p className="text-muted-foreground text-sm">
+            Treasury: <span className="font-mono text-foreground">{treasury.name}</span>
+          </p>
+        </div>
 
-        <section className="flex flex-col gap-3">
-          <div>
-            <h2 className="font-semibold text-lg tracking-tight">Telegram</h2>
-            <p className="text-muted-foreground text-sm">
-              Per-treasury approval routing. Until a chat id is set, actions requiring approval park
-              in pending — auto-approved actions still execute normally.
-            </p>
+        <div className="grid gap-10 lg:grid-cols-[180px_1fr] lg:gap-12">
+          {/* Desktop nav: sticky left-column sidebar. Hidden on mobile
+              (mobile version rendered above). */}
+          <div className="hidden lg:block">
+            <SettingsSectionNav sections={SECTIONS} />
           </div>
-          <TelegramConfigForm
-            initial={{
-              telegramChatId: treasury.telegramChatId,
-              telegramApproverIds: treasury.telegramApproverIds,
-            }}
-            treasuryId={treasury.id}
-          />
-        </section>
 
-        <section className="flex flex-col gap-3">
-          <div>
-            <h2 className="font-semibold text-lg tracking-tight">Alerts</h2>
-            <p className="text-muted-foreground text-sm">
-              Telegram-delivered notifications for yield drift, idle capital, anomalies, and
-              concentration risk. All start off; turn them on once your Telegram is configured.
-            </p>
-          </div>
-          <AlertSubscriptionsForm initial={alertDtos} treasuryId={treasury.id} />
-        </section>
+          <div className="flex min-w-0 flex-col gap-12">
+            <section id="wallet" className="flex scroll-mt-28 flex-col gap-4 lg:scroll-mt-20">
+              <div>
+                <SectionLabel>01</SectionLabel>
+                <h2 className="mt-1 font-semibold text-lg tracking-tight">Wallet</h2>
+                <p className="text-muted-foreground text-sm">
+                  Treasury wallet address and signer backend. Fund this address with USDC on Solana
+                  mainnet to start using the agent.
+                </p>
+              </div>
+              <WalletAddressBlock
+                address={treasury.walletAddress}
+                signerBackend={treasury.signerBackend}
+              />
+            </section>
 
-        <section className="flex flex-col gap-3">
-          <div>
-            <h2 className="font-semibold text-lg tracking-tight">Address book</h2>
-            <p className="text-muted-foreground text-sm">
-              Named recipients for outbound USDC transfers. Pre-approved recipients skip the
-              approval card for transfers above your{' '}
-              <span className="font-mono">requireApprovalAboveUsdc</span> cap — the 24h velocity
-              budget still applies. Labels are visible to chat ("send 100 to Acme") and on approval
-              cards.
-            </p>
+            <section id="policy" className="flex scroll-mt-28 flex-col gap-4 lg:scroll-mt-20">
+              <div>
+                <SectionLabel>02</SectionLabel>
+                <h2 className="mt-1 font-semibold text-lg tracking-tight">Policy</h2>
+                <p className="text-muted-foreground text-sm">
+                  Caps and venue allowlist applied at proposal time. Changes take effect on the next
+                  proposed action — in-flight executions use the policy frozen at proposal time.
+                </p>
+              </div>
+              <PolicyForm initial={policy} meta={formMeta} treasuryId={treasury.id} />
+            </section>
+
+            <section id="telegram" className="flex scroll-mt-28 flex-col gap-4 lg:scroll-mt-20">
+              <div>
+                <SectionLabel>03</SectionLabel>
+                <h2 className="mt-1 font-semibold text-lg tracking-tight">Telegram</h2>
+                <p className="text-muted-foreground text-sm">
+                  Per-treasury approval routing. Until a chat id is set, actions requiring approval
+                  park in pending — auto-approved actions still execute normally.
+                </p>
+              </div>
+              <TelegramConfigForm
+                initial={{
+                  telegramChatId: treasury.telegramChatId,
+                  telegramApproverIds: treasury.telegramApproverIds,
+                }}
+                treasuryId={treasury.id}
+              />
+            </section>
+
+            <section id="alerts" className="flex scroll-mt-28 flex-col gap-4 lg:scroll-mt-20">
+              <div>
+                <SectionLabel>04</SectionLabel>
+                <h2 className="mt-1 font-semibold text-lg tracking-tight">Alerts</h2>
+                <p className="text-muted-foreground text-sm">
+                  Telegram-delivered notifications for yield drift, idle capital, anomalies, and
+                  concentration risk. All start off; turn them on once your Telegram is configured.
+                </p>
+              </div>
+              <AlertSubscriptionsForm initial={alertDtos} treasuryId={treasury.id} />
+            </section>
+
+            <section id="address-book" className="flex scroll-mt-28 flex-col gap-4 lg:scroll-mt-20">
+              <div>
+                <SectionLabel>05</SectionLabel>
+                <h2 className="mt-1 font-semibold text-lg tracking-tight">Address book</h2>
+                <p className="text-muted-foreground text-sm">
+                  Named recipients for outbound USDC transfers. Pre-approved recipients skip the
+                  approval card for transfers above your{' '}
+                  <span className="font-mono">requireApprovalAboveUsdc</span> cap — the 24h velocity
+                  budget still applies.
+                </p>
+              </div>
+              <AddressBookTable initial={addressBookEntries} treasuryId={treasury.id} />
+            </section>
           </div>
-          <AddressBookTable initial={addressBookEntries} treasuryId={treasury.id} />
-        </section>
-      </main>
-    </div>
+        </div>
+      </div>
+    </AppShell>
   );
 }

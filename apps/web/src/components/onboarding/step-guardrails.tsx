@@ -168,7 +168,8 @@ export function StepGuardrails({
         />
         <p className="rounded-md border border-dashed bg-muted/30 px-3 py-2 text-muted-foreground text-xs">
           Allowed venues: <span className="font-mono">kamino</span>,{' '}
-          <span className="font-mono">save</span>. Edit later in Settings.
+          <span className="font-mono">save</span>, <span className="font-mono">jupiter</span>. Edit
+          later in Settings.
         </p>
         <div className="flex items-center justify-end gap-3">
           {error && (

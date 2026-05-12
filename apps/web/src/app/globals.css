@@ -22,6 +22,8 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-soft-foreground: var(--primary-soft-foreground);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -59,6 +61,10 @@
   --border: oklch(0.91 0 0);
   --input: oklch(0.97 0 0);
   --ring: oklch(0.55 0.14 195);
+  /* Soft variant of primary used by Chip tone='primary' — subtle cyan
+     fill behind primary-soft-foreground text. */
+  --primary-soft: oklch(0.94 0.04 195);
+  --primary-soft-foreground: oklch(0.3 0.1 195);
 }
 
 .dark {
@@ -79,16 +85,47 @@
   --accent-foreground: oklch(0.98 0 0);
   --destructive: oklch(0.65 0.22 25);
   --border: oklch(0.24 0 0);
-  --input: oklch(0.16 0 0);
+  /* Bumped from 0.16 (= card) to 0.28 so input borders are visible
+     against the surrounding Card surface in dark mode. The `dark:bg-input/30`
+     fill stays subtle at 30% opacity. */
+  --input: oklch(0.28 0 0);
   --ring: oklch(0.78 0.14 195);
+  --primary-soft: oklch(0.26 0.06 195);
+  --primary-soft-foreground: oklch(0.84 0.1 195);
 }
 
 @layer base {
   * {
     @apply border-border outline-ring/50;
   }
+  /* Reserve the scrollbar gutter at the html level — but only on devices
+     with a precision pointer (desktop). Why scoped: Radix locks body
+     scroll on dropdown open by adding `padding-right: <scrollbar-width>`
+     to <body>; on desktop our slim custom scrollbar combined with the
+     sticky header caused a ~10px jump on every open, which this
+     property fixes by reserving the gutter permanently. On touch
+     devices (mobile / tablet), browsers like Android Chrome still
+     respect `scrollbar-gutter: stable` even with overlay scrollbars,
+     producing a visible ~15px gap on the right edge of the viewport.
+     The desktop dropdown-shift problem doesn't apply on touch (no
+     classic scrollbar to lock), so we scope the rule to `pointer:fine`. */
+  @media (pointer: fine) {
+    html {
+      scrollbar-gutter: stable;
+    }
+  }
   body {
     @apply bg-background text-foreground font-sans antialiased;
+  }
+  /* Defense-in-depth against a stray descendant pushing horizontal
+     overflow on narrow viewports (e.g. a long base58 address that
+     didn't wrap, a fixed-width chart). Clips at the document level
+     so neither the sticky AppShell header nor the settings section
+     nav can drift past the right edge. */
+  html,
+  body {
+    @apply overflow-x-hidden;
+    max-width: 100%;
   }
 }
 
@@ -121,4 +158,61 @@
       opacity: 1;
     }
   }
+}
+
+/* ── Brand utilities (from design handoff) ────────────────────────────────
+   Polling pulse — used as the cyan "5s" indicator beside live balance reads
+   (chat sidebar, onboarding step 2). Sub-second pulses are too jittery; 1.6s
+   reads as "watching, not spinning". */
+@keyframes tc-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.tc-pulse {
+  animation: tc-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes tc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.tc-spin {
+  animation: tc-spin 0.9s linear infinite;
+}
+
+/* Focus styles are owned by each shadcn primitive (Button, Input, etc.) —
+   we previously had a global :focus-visible double-ring here, but it
+   overrode the per-component styles with a much heavier treatment on
+   inputs. Reverted; the per-component focus-visible utilities give a
+   subtler, brand-tinted ring that matches the rest of the design. */
+
+::selection {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+/* Slim webkit scrollbars that match the brand palette. Firefox uses
+   scrollbar-width: thin via its own rule. */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in oklch, var(--foreground) 12%, transparent);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklch, var(--foreground) 22%, transparent);
+  background-clip: padding-box;
 }
