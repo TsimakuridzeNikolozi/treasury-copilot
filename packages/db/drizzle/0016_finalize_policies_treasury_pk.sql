@@ -23,14 +23,19 @@ BEGIN
   INTO has_id_column;
 
   IF has_id_column THEN
-    SELECT COUNT(*), MIN(id)
-    INTO treasury_count, only_treasury_id
+    SELECT COUNT(*)
+    INTO treasury_count
     FROM treasuries;
 
     -- Preserve a legacy singleton row when there is exactly one treasury.
     -- Otherwise drop orphaned singleton rows; getPolicy falls back to
     -- DEFAULT_POLICY and the first PATCH recreates the per-treasury row.
     IF treasury_count = 1 THEN
+      SELECT id
+      INTO only_treasury_id
+      FROM treasuries
+      LIMIT 1;
+
       UPDATE policies
       SET treasury_id = only_treasury_id
       WHERE treasury_id IS NULL;
