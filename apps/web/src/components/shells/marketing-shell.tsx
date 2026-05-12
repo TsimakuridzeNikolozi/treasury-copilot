@@ -19,7 +19,7 @@ export function MarketingShell({ children }: { children: ReactNode }) {
           aria-label="External"
         >
           <a
-            href="https://github.com/TsimakuridzeNikolozi"
+            href="https://github.com/TsimakuridzeNikolozi/treasury-copilot"
             target="_blank"
             rel="noreferrer"
             className="hover:text-foreground"

@@ -41,9 +41,12 @@ const CreateBody = z.object({
   treasuryId: z.string().uuid(),
   label: labelSchema,
   recipientAddress: z.string().regex(SOLANA_ADDRESS_REGEX, 'must be a base58 Solana address'),
-  // Optional. Empty strings are coerced to undefined by the trim+min(1)
-  // pattern (`.transform` keeps the empty-then-undefined collapse explicit).
-  notes: notesSchema.optional().transform((s) => (s && s.length > 0 ? s : undefined)),
+  // Optional. null (from the form when empty) and empty strings both
+  // collapse to undefined so the DB column stays at its default.
+  notes: notesSchema
+    .nullable()
+    .optional()
+    .transform((s) => (s && s.length > 0 ? s : undefined)),
   preApproved: z.boolean(),
 });
 
